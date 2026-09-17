@@ -12,10 +12,11 @@
 # Upsert is idempotent by id (and dedups by content hash): re-remembering the
 # same record updates it in place, never duplicates.
 #
-# The store is the files backend at ~/.eidetic/memory by default — a home-dir
-# path OUTSIDE any git worktree, so a record Claude remembers is recallable by
-# the colleague backend (which runs in throwaway worktrees), and vice versa.
-# Set EIDETIC_DATA_DIR to opt out of sharing; use --backend mongo|neo4j (with
+# The store is the files backend. Default location resolves per-operation:
+# PUBLIC records inside a git repo → <repo-root>/.eidetic/memory (committed,
+# team-shared); PRIVATE records, or any record outside a git repo →
+# $HOME/.eidetic/memory (never committed). An explicit EIDETIC_DATA_DIR still
+# wins and short-circuits to that single dir. Use --backend mongo|neo4j (with
 # EIDETIC_MONGO_URI / NEO4J_URI) for a server-backed shared store.
 
 set -euo pipefail
@@ -40,12 +41,10 @@ resolve_eidetic() {
         fi
         dir=$(dirname "$dir")
     done
-    cat >&2 <<'EOF'
-error: eidetic CLI not found.
-hint: install it with `uv tool install eidetic-cli` (or `pipx install eidetic-cli`),
-      or run from inside the eidetic-cli checkout with `uv` available.
-      The console script is `eidetic` (dist name: eidetic-cli).
-EOF
+    # In a vendored copy there is no eidetic-cli checkout to fall back to, so the
+    # only honest remedy is to install the CLI. One `error:` + one `hint:` line.
+    printf 'error: eidetic CLI not found.\n' >&2
+    printf 'hint: install it with: uv tool install eidetic-cli (or pipx install eidetic-cli); the console script is eidetic.\n' >&2
     return 1
 }
 
@@ -60,8 +59,10 @@ Usage:
 
 A record needs `id`, `text`, and `type`; `hash` and `metadata` are recommended
 (hash is derived from text when omitted). Upsert is idempotent by id.
-Public data only. Every flag is forwarded verbatim to `eidetic remember`.
-See `eidetic explain remember`.
+Records default to this agent's PERSONAL, PUBLIC scope (--scope from the
+culture.yaml suffix, --visibility public); pass --visibility private to keep
+a record out of the shared/committed store. Every flag is forwarded verbatim
+to `eidetic remember`. See `eidetic explain remember`.
 EOF
 }
 
@@ -72,9 +73,33 @@ case "${1:-}" in
         ;;
 esac
 
+# No record argument AND stdin is an interactive terminal → `eidetic remember`
+# would block forever waiting for NDJSON. Show usage instead of hanging. A piped
+# or redirected stdin (`cat records.ndjson | remember.sh`) is not a TTY and
+# proceeds to the batch path normally.
+#
+# The record is the one positional argument; every other argument is a flag or
+# a flag's value. So "no record" means no argument that is a JSON object —
+# not "no arguments": a flag-only call (`remember.sh --json`, `remember.sh
+# --scope x`) must hit this guard too, or it hangs on the TTY just the same.
+has_record_arg() {
+    local a
+    for a in "$@"; do
+        case "${a#"${a%%[![:space:]]*}"}" in
+            '{'*) return 0 ;;
+        esac
+    done
+    return 1
+}
+if [ -t 0 ] && ! has_record_arg "$@"; then
+    usage >&2
+    printf 'hint: pass a JSON record as an argument, or pipe NDJSON on stdin.\n' >&2
+    exit 1
+fi
+
 resolve_eidetic || exit 2
 
-# ── default to this agent's PERSONAL, PRIVATE scope (culture.yaml `suffix`) ──
+# ── default to this agent's PERSONAL, PUBLIC scope (culture.yaml `suffix`) ───
 # A record this agent remembers should land in its OWN personal scope, not the
 # global `default` scope shared by every project on this host. We read the
 # `suffix` from the nearest culture.yaml (walking up from this script), so the
@@ -83,14 +108,20 @@ resolve_eidetic || exit 2
 # (running in a worktree of this same repo) resolves the same suffix, keeping
 # the Claude↔colleague shared-memory story intact.
 #
-# The personal scope is PRIVATE by default: in eidetic's model only a private
-# record is isolated to its scope (`can_serve`), so private is what actually
-# keeps these records from leaking to a default/other-scope recall. Scope and
-# visibility are paired — the private default applies only when we inject the
-# resolved scope, and only if the caller didn't pass --visibility (so an
-# explicit `--visibility public` still wins). An explicit --scope on the command
-# line takes over steering entirely; a wheel install with no culture.yaml falls
-# back to the plain CLI default (`default`/`public`).
+# The personal scope is PUBLIC by default — the memory scope+visibility
+# convention (v1, docs/contract.md): an in-repo record is team-shared by
+# default (routing already sends a public write inside a git repo to
+# <repo-root>/.eidetic/memory, committed alongside the code), matching both
+# the plain `eidetic remember` CLI's own --visibility default and the
+# colleague backend's runtime (colleague/memory.py hardcodes --visibility
+# public) — so a no-flag remember here and a no-flag `eidetic remember`
+# elsewhere land mutually-visible records instead of silently disagreeing.
+# Scope and visibility are paired — the public default applies only when we
+# inject the resolved scope, and only if the caller didn't pass --visibility
+# (so an explicit `--visibility private` still wins, keeping genuinely
+# personal/non-shareable data out of the committed store). An explicit
+# --scope on the command line takes over steering entirely; a wheel install
+# with no culture.yaml falls back to the plain CLI default (`default`/`public`).
 resolve_scope() {
     local dir suffix=""
     dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -100,9 +131,12 @@ resolve_scope() {
             # inline `# comment` or trailing space can't bleed into the scope),
             # then strip surrounding quotes only — matching the canonical parser
             # in .claude/skills/cicd/scripts/_resolve-nick.sh.
+            # `|| true`: under `set -o pipefail`, `head -n1` closing the pipe
+            # early can SIGPIPE `sed`, making the substitution non-zero and
+            # aborting the script. An empty parse must yield "" here, not exit.
             suffix=$(sed -n \
                 's/^[[:space:]]*-\{0,1\}[[:space:]]*suffix:[[:space:]]*\([^[:space:]]*\).*/\1/p' \
-                "$dir/culture.yaml" | head -n1 | tr -d "\"'")
+                "$dir/culture.yaml" | head -n1 | tr -d "\"'" || true)
             break
         fi
         dir=$(dirname "$dir")
@@ -127,12 +161,31 @@ if ! has_flag --scope "$@"; then
     EIDETIC_SCOPE=$(resolve_scope)
     if [ -n "$EIDETIC_SCOPE" ]; then
         SCOPE_ARGS+=(--scope "$EIDETIC_SCOPE")
-        has_flag --visibility "$@" || SCOPE_ARGS+=(--visibility private)
+        has_flag --visibility "$@" || SCOPE_ARGS+=(--visibility public)
     fi
+    # No suffix resolved (e.g. a wheel install with no culture.yaml): leave
+    # --scope/--visibility unset entirely, so the plain `eidetic remember`
+    # defaults apply (scope=default, visibility=public) — identical
+    # visibility to the suffix-resolved case above, just grouped under the
+    # `default` scope name instead of this agent's personal one. Nothing to
+    # warn about: unlike the old private-by-default behavior, there is no
+    # privacy downgrade here either way.
 fi
 
-: "${EIDETIC_EMBED_URL:=http://localhost:8002/v1}"
+# The endpoint is the lobes fleet gateway, which fronts every role on ONE
+# OpenAI-compatible port; the per-role vLLM containers are not published to the
+# host, so a per-gear port is unreachable (`lobes endpoint embedder` confirms
+# the live value). eidetic-cli#28 aligned these to :8002, which matched the code
+# default but was never host-reachable. These values match eidetic's own code
+# default in eidetic/memory/embed.py, so this export is a redundant-but-harmless
+# belt-and-suspenders default kept for explicitness and for older eidetic
+# installs that predate the code-default alignment. The bearer token the gateway
+# requires is read by eidetic from EIDETIC_EMBED_API_KEY / COLLEAGUE_API_KEY /
+# CULTURE_VLLM_API_KEY — deliberately not set here, so no secret passes through
+# this wrapper.
+: "${EIDETIC_EMBED_URL:=http://localhost:8001/v1}"
 : "${EIDETIC_EMBED_MODEL:=Qwen/Qwen3-Embedding-0.6B}"
-export EIDETIC_EMBED_URL EIDETIC_EMBED_MODEL
+: "${EIDETIC_RERANK_MODEL:=Qwen/Qwen3-Reranker-0.6B}"
+export EIDETIC_EMBED_URL EIDETIC_EMBED_MODEL EIDETIC_RERANK_MODEL
 
 exec "${EIDETIC[@]}" remember "${SCOPE_ARGS[@]}" "$@"
