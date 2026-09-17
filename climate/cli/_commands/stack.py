@@ -149,6 +149,18 @@ def _classify_compose_failure(verb: str, returncode: int, stdout: str, stderr: s
     )
 
 
+def _env_file_args(compose: Path) -> list[str]:
+    """``--env-file docker/weather.env`` when that file exists.
+
+    Compose interpolates ``${CLIMATE_WEB_BIND}``, ``${CLIMATE_WEB_PORT}`` and
+    ``${CLIMATE_WEATHER_CONFIG_DIR}`` from its *project* env file, not from a
+    service's ``env_file:``. Passing the same gitignored file here makes the
+    one documented file govern both the containers and the host-side mapping.
+    """
+    env_file = compose.parent / "docker" / "weather.env"
+    return ["--env-file", str(env_file)] if env_file.is_file() else []
+
+
 def _compose(compose: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run ``docker compose -f <compose> <args...>`` capturing output.
 
@@ -156,7 +168,7 @@ def _compose(compose: Path, *args: str) -> subprocess.CompletedProcess[str]:
     (vanished between the earlier check and now) or a non-zero compose exit
     is translated into a :class:`CliError` (code 2) so no traceback leaks.
     """
-    cmd = ["docker", "compose", "-f", str(compose), *args]
+    cmd = ["docker", "compose", "-f", str(compose), *_env_file_args(compose), *args]
     try:
         proc = subprocess.run(  # nosec B603 - fixed argv, no shell
             cmd,

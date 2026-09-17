@@ -325,3 +325,17 @@ def test_parse_ps_line_delimited() -> None:
 def test_parse_ps_empty() -> None:
     assert stack._parse_ps("") == []
     assert stack._parse_ps("   \n  ") == []
+
+
+def test_compose_gets_the_env_file_for_interpolation_when_it_exists(tmp_path):
+    """Compose interpolates ${CLIMATE_WEB_BIND} etc. from its project env file,
+    not from a service's env_file, so the verbs must pass the same file."""
+    from climate.cli._commands import stack as stack_module
+
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n", encoding="utf-8")
+    assert stack_module._env_file_args(compose) == []
+    (tmp_path / "docker").mkdir()
+    env_file = tmp_path / "docker" / "weather.env"
+    env_file.write_text("CLIMATE_WEB_BIND=127.0.0.1\n", encoding="utf-8")
+    assert stack_module._env_file_args(compose) == ["--env-file", str(env_file)]

@@ -103,6 +103,14 @@ services:
       - docker/weather.env
     environment:
       CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
+      # INSIDE the container the service must listen on all interfaces and on
+      # the mapped target port, or docker's port forward cannot reach it
+      # (found live: a loopback listener gives "connection reset by peer").
+      # Exposure is decided by the HOST side of the mapping below, which stays
+      # loopback unless CLIMATE_WEB_BIND says otherwise. These two override
+      # whatever docker/weather.env carries for the same names.
+      CLIMATE_WEB_BIND: "0.0.0.0"
+      CLIMATE_WEB_PORT: "8095"
     volumes:
       - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
     ports:

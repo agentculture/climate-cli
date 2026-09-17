@@ -309,3 +309,14 @@ def test_no_command_removes_the_mongo_volume():
             if pattern in text:
                 offenders.append((str(path.relative_to(REPO_ROOT)), pattern))
     assert not offenders, f"found volume-destroying command(s): {offenders}"
+
+
+def test_web_container_listens_on_all_interfaces_inside_but_maps_to_loopback_outside() -> None:
+    """Found by live validation: a loopback listener INSIDE the container is
+    unreachable through docker's port forward (connection reset). Exposure is
+    decided by the host side of the mapping, never by the in-container bind."""
+    text = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    web = yaml.safe_load(text)["services"]["weather-web"]
+    assert web["environment"]["CLIMATE_WEB_BIND"] == "0.0.0.0"  # nosec B104 - in-container only
+    assert web["environment"]["CLIMATE_WEB_PORT"] == "8095"
+    assert web["ports"] == ["${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8095}:8095"]
