@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T17:04:14Z",
-  "updated": "2026-09-17T18:01:06Z",
+  "updated": "2026-09-17T18:27:15Z",
   "claims": [
     {
       "id": "c1",
@@ -1288,7 +1288,21 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Main agent merged task t1 on its test results alone, assuming the met-no fixture was the 'complete' product the spec and the t11 brief call for; it is the 'compact' product (6 instant variables), so the met-no adapter's normalization of dew point, apparent temperature, UV, fog, cloud layers and gusts was never exercised. Found only when t11 reported the fixture lacked dew_point",
+      "skipped_check": "compare each captured fixture's endpoint and variable set against the spec (s12: locationforecast/2.0/complete, 13 instant variables) before merging t1",
+      "refs": [
+        "t1",
+        "t11",
+        "s12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": [
     {
       "id": "o1",

@@ -262,6 +262,32 @@ padded with nulls.
 | `diffuse_radiation` | `w_m2` | number | |
 | `uv_index` | `index` | number | |
 | `weather_code` | `code` | string | Provider's own code, as a string |
+| `showers` | `mm` | number | Convective precipitation, where the provider splits it out |
+| `snowfall` | `mm` | number | Snowfall depth over the interval, converted to millimetres |
+| `cloud_cover_low` | `percent` | number | |
+| `cloud_cover_medium` | `percent` | number | |
+| `cloud_cover_high` | `percent` | number | |
+| `fog` | `percent` | number | Fog area fraction |
+| `uv_index_clear_sky` | `index` | number | UV index assuming no cloud |
+| `direct_normal_radiation` | `w_m2` | number | Direct beam on a plane facing the sun (IMS `NIP`) |
+| `wind_gust_direction` | `deg` | number | Direction of the gust (IMS `WDmax`) |
+| `wind_speed_max_1min` | `m_s` | number | Highest 1-minute mean wind (IMS `WS1mm`) |
+| `wind_speed_max_10min` | `m_s` | number | Highest 10-minute mean wind (IMS `Ws10mm`) |
+| `wind_direction_std` | `deg` | number | Standard deviation of wind direction (IMS `STDwd`) |
+| `temperature_max` | `degC` | number | Maximum over the value's interval |
+| `temperature_min` | `degC` | number | Minimum over the value's interval |
+| `temperature_grass_min` | `degC` | number | Minimum near the ground (IMS `TG`) |
+| `relative_humidity_max` | `percent` | number | Forecast products that give a range |
+| `relative_humidity_min` | `percent` | number | Forecast products that give a range |
+| `is_day` | `index` | number | 1 during daylight, 0 otherwise |
+
+**No provider value is dropped.** The table above is the shared vocabulary, not
+a filter. When a provider supplies a numeric or coded variable that has no row
+here, the adapter still emits it under the id `x_<provider-variable>` (the
+provider's own name in lower-case `snake_case`, e.g. `x_snow_depth`), with
+`original_value` / `original_unit` verbatim and `unit` set to the matching unit
+id when one applies, otherwise `other`. Clients must tolerate variable ids they
+do not know; the dashboard may ignore `x_` variables, the CLI lists them.
 
 ### 4.1 Units
 
@@ -280,6 +306,7 @@ dashboard maps them to display strings.
 | `m` | m | metres |
 | `index` | — | dimensionless index |
 | `code` | — | opaque provider code |
+| `other` | — | a unit outside this table; read `original_unit` |
 
 The API normalizes to these units and preserves what the provider sent in
 `original_value` / `original_unit`. `original_unit` may carry a unit id outside
