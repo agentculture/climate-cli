@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T17:04:14Z",
-  "updated": "2026-09-17T18:27:15Z",
+  "updated": "2026-09-17T19:09:49Z",
   "claims": [
     {
       "id": "c1",
@@ -1298,6 +1298,29 @@
         "t1",
         "t11",
         "s12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "Main agent merged task t12 (openweather adapter) on green tests without checking its normalized output against docs/weather-api.md section 4: the adapter emits non-vocabulary variable ids (feels_like, humidity, pressure, wind_deg) and unit ids (C, %, m/s), and its synthesized fixture is in Kelvin although the request asks for units=metric, so /latest would serve 285.32 C. Found only when the dashboard task inspected real API output",
+      "skipped_check": "run each adapter's normalize() over its fixture and assert every emitted variable id and unit id is in the contract vocabulary (or x_-prefixed) before merging the adapter",
+      "refs": [
+        "t12",
+        "t22"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "control-absent",
+      "what": "Task agent t22, blocked by the Playwright MCP needing a system Chrome, ran 'npx playwright install chrome' which deleted the shared ~/.cache/ms-playwright/chromium-1234 browser bundle before failing - a change outside its worktree on the user's machine. The main agent's brief forbade touching other repos and docker but did not forbid machine-level installs",
+      "skipped_check": "brief task agents to never install or remove machine-level tooling (npx/pip/apt installs, shared caches) and to report a missing tool instead",
+      "refs": [
+        "t22"
       ],
       "origin": "llm",
       "status": "proposed"
