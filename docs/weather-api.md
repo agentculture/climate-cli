@@ -122,8 +122,20 @@ provider*; it never means zero.
 The API paginates nothing. It bounds result size instead, and says when it did:
 
 - `series` returns at most `max_points` points per series (default `2000`, hard
-  ceiling `10000`).
-- `forecast` returns at most `168` hours of horizon.
+  ceiling `10000`). The grid is **sized arithmetically before it is built**, so
+  a window naming millions of buckets never allocates more than the ceiling.
+- `series` accepts a span (`to - from`) of at most **`31622400` seconds
+  (366 days)**. A longer span is rejected with `invalid_parameter`, whose
+  `detail` carries `span_seconds` and `max_span_seconds`. The cap exists
+  because `step` has no maximum: bounding the grid alone would still leave the
+  store query unbounded.
+- `series` truncation keeps the **earliest** buckets. The response's `to` then
+  reports the end of the window actually returned, not the one requested, and
+  the store is queried only over that narrowed window.
+- One `series` entry materializes at most `100000` stored points; a series that
+  hits the cap keeps its oldest points and adds a `truncated` warning.
+- `forecast` returns at most `168` hours of horizon, **measured from
+  `generated_at`**, not from the issue time.
 - When a bound truncated the result, the response's `warnings` array carries a
   `truncated` entry and the relevant `*_count` fields describe what was
   returned, not what exists.
@@ -139,7 +151,7 @@ Attached to **every** value, and repeated at reading level where it is uniform.
 | `provider` | string | no | Registry provider id: `open-meteo`, `met-no`, `openweather`, `ims`, `metar`, `ims-forecast` |
 | `source` | string | no | The provider endpoint or feed this value came from, by name, never a URL with parameters. Examples: `locationforecast/2.0/complete`, `v1/forecast`, `data/2.5/weather`, `envista/v1/stations/{id}/data/latest`, `metar/{station}` |
 | `model` | string | yes | The numeric model or product identifier when the provider names one (`MEPS`, `ECMWF-IFS`, `GFS`); `null` for direct observations |
-| `model_run_at` | string (time) | yes | Model run / issue time in UTC; `null` when not a model value |
+| `model_run_at` | string (time) | yes | The **provider's** model run / issue time in UTC; `null` when not a model value or when the provider stated none. Never the time the tracker fetched the response — that is `requested_at` |
 | `station` | string | yes | Station or site identifier when the provider is station-based (`ims`, `metar`); `null` otherwise. Station ids are provider identifiers, not coordinates |
 | `interval_seconds` | integer | yes | The provider's own declared validity slice for this value (e.g. Open-Meteo's `current.interval` of `900`); `null` when the provider declares none |
 | `fetch_id` | string | no | Opaque id of the raw fetch record this value was derived from. Stable, comparable for equality, and carries no location information |
@@ -643,7 +655,7 @@ with every value fully annotated. This is what the AC-control agent reads.
 | --- | --- | --- | --- |
 | `location` | string, repeatable | all configured labels | Restrict to these labels |
 | `provider` | string, repeatable | all enabled providers | Restrict to these provider ids |
-| `variables` | comma-separated variable ids | all | Restrict the `values` map. Unknown ids are rejected with `invalid_parameter` |
+| `variables` | comma-separated variable ids | all | Restrict the `values` map. A vocabulary id or an `x_<provider-field>` extension id; anything else is rejected with `unknown_variable` |
 | `kind` | string, repeatable (`observation`, `model`) | `observation,model` | Which kinds count as "latest". `forecast` is rejected here — use `/forecast` |
 | `max_age` | integer seconds, `> 0` | unset | Overrides the staleness threshold for every returned value and reading |
 
@@ -855,7 +867,7 @@ missed ticks**. This is the dashboard's line-chart feed.
 
 | Parameter | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `variable` | string | — | **Required.** Exactly one variable id |
+| `variable` | string | — | **Required.** Exactly one variable id, or one `x_<provider-field>` extension id |
 | `location` | string, repeatable | all | |
 | `provider` | string, repeatable | all enabled | |
 | `from` | timestamp | `to` minus 24 h | Inclusive lower bound |
@@ -865,7 +877,13 @@ missed ticks**. This is the dashboard's line-chart feed.
 | `agg` | string | `last` | How several values inside one bucket collapse: `last`, `first`, `mean`, `min`, `max` |
 | `max_points` | integer | `2000` | Per series; hard ceiling `10000` |
 
-`from` must be earlier than `to`; otherwise `invalid_parameter`.
+`from` must be earlier than `to`; otherwise `invalid_parameter`. `to - from`
+must not exceed the span cap in [section 2.7](#27-limits); otherwise
+`invalid_parameter`.
+
+When the window names more than `max_points` buckets, the **earliest**
+`max_points` are returned, the response's `to` reports the narrowed end, and a
+`truncated` warning names the requested bucket count and the limit that applied.
 
 #### 5.5.2 Response
 
@@ -877,9 +895,9 @@ as every other entry's, so a chart can share one x-axis.
 | --- | --- | --- | --- |
 | `generated_at` | string (time) | no | |
 | `variable` | string | no | Echo |
-| `unit` | string | no | Canonical unit for the whole response |
+| `unit` | string | no | Canonical unit for the whole response. For an `x_` extension the table assigns none, so the stored unit is reported (or `other` when the stored units disagree or nothing matched) |
 | `from` | string (time) | no | First grid instant |
-| `to` | string (time) | no | Exclusive end |
+| `to` | string (time) | no | Exclusive end **of what was returned** — earlier than the requested `to` when the result was truncated |
 | `step_seconds` | integer | no | |
 | `agg` | string | no | Echo |
 | `point_count` | integer | no | Length of every `points` array |
@@ -1005,10 +1023,21 @@ none.
 | --- | --- | --- | --- |
 | `location` | string, repeatable | all | |
 | `provider` | string, repeatable | all enabled with a forecast | |
-| `variables` | comma-separated variable ids | all | |
+| `variables` | comma-separated variable ids | all vocabulary ids | An `x_` extension has no enumerable id, so it is returned when named explicitly |
 | `issued_at` | timestamp | unset | Return the newest forecast issued **at or before** this instant. Unset means the newest issue available |
-| `horizon_hours` | integer | `48` | Valid times from the issue onwards. Maximum `168` |
+| `horizon_hours` | integer | `48` | Valid times from `generated_at` onwards. Maximum `168` |
 | `step_hours` | integer | `1` | Grid resolution of `points` |
+
+**Issue time and horizon.** `issued_at` is the provider's own model issue /
+run time, taken from the stored reading's `model_run_at`. When the provider
+states none, the time the tracker fetched the response stands in for it and
+the entry says so with `issued_at_estimated: true` — the two are never
+silently conflated.
+
+The horizon is measured from `generated_at`, **not** from `issued_at`: a
+forecast fetched hours ago still carries valid future points, and measuring
+from its own issue time discarded them. Points whose `valid_at` is already in
+the past are not a forecast and are excluded.
 
 #### 5.6.2 Response
 
@@ -1021,12 +1050,13 @@ none.
 | `forecasts[].provider` | string | no | |
 | `forecasts[].location` | string | no | |
 | `forecasts[].kind` | string | no | Always `forecast` |
-| `forecasts[].issued_at` | string (time) | no | Provider's issue / model-run time |
+| `forecasts[].issued_at` | string (time) | no | Provider's issue / model-run time, or the fetch time when the provider states none |
+| `forecasts[].issued_at_estimated` | boolean | no | `true` when `issued_at` is the fetch time standing in for an issue time the provider did not give |
 | `forecasts[].requested_at` | string (time) | no | When the tracker fetched it |
 | `forecasts[].fetch_id` | string | no | |
-| `forecasts[].provenance` | object | no | [`provenance`](#31-provenance) |
+| `forecasts[].provenance` | object | no | [`provenance`](#31-provenance). Its `model_run_at` is the provider's stated run time, `null` when there is none — it is never the fetch time |
 | `forecasts[].variables` | array of string | no | Variable ids present in `points` |
-| `forecasts[].units` | object | no | Map of variable id → unit id |
+| `forecasts[].units` | object | no | Map of variable id → unit id. An `x_` extension reports its stored unit |
 | `forecasts[].point_count` | integer | no | |
 | `forecasts[].points` | array | no | Ascending by `valid_at` |
 | `forecasts[].points[].valid_at` | string (time) | no | The instant the forecast is for |
@@ -1055,7 +1085,8 @@ GET /api/v1/forecast?location=office&provider=met-no&variables=temperature,preci
       "provider": "met-no",
       "location": "office",
       "kind": "forecast",
-      "issued_at": "2026-09-17T08:00:00Z",
+      "issued_at": "2026-09-17T06:00:00Z",
+      "issued_at_estimated": false,
       "requested_at": "2026-09-17T08:20:03Z",
       "fetch_id": "f_01J9Q2P4R7T0QA",
       "provenance": {
@@ -1077,7 +1108,7 @@ GET /api/v1/forecast?location=office&provider=met-no&variables=temperature,preci
       "points": [
         {
           "valid_at": "2026-09-17T09:00:00Z",
-          "lead_seconds": 3600,
+          "lead_seconds": 10800,
           "values": {
             "temperature": 26.3,
             "precipitation": 0.0
@@ -1085,7 +1116,7 @@ GET /api/v1/forecast?location=office&provider=met-no&variables=temperature,preci
         },
         {
           "valid_at": "2026-09-17T10:00:00Z",
-          "lead_seconds": 7200,
+          "lead_seconds": 14400,
           "values": {
             "temperature": 27.1,
             "precipitation": 0.0
@@ -1093,7 +1124,7 @@ GET /api/v1/forecast?location=office&provider=met-no&variables=temperature,preci
         },
         {
           "valid_at": "2026-09-17T11:00:00Z",
-          "lead_seconds": 10800,
+          "lead_seconds": 18000,
           "values": {
             "temperature": 27.8,
             "precipitation": null

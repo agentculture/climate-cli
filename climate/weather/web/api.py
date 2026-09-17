@@ -23,9 +23,13 @@ written. Each is called out at the point it is produced, with a ``GAP``
 comment, and always resolves to the documented null rather than being
 guessed or fabricated:
 
-* ``provenance.model_run_at``, ``provenance.station`` and
-  ``provenance.interval_seconds`` — :class:`~climate.weather.store.Reading`
-  and :class:`~climate.weather.store.Measurement` have no fields for these.
+* ``provenance.station`` and ``provenance.interval_seconds`` —
+  :class:`~climate.weather.store.Reading` and
+  :class:`~climate.weather.store.Measurement` have no fields for these.
+  ``provenance.model_run_at`` is no longer a gap:
+  :attr:`~climate.weather.store.Reading.model_run_at` carries the provider's
+  own model-run time and every route reports it, ``null`` only when the
+  provider stated none.
 * ``value.quality`` — :class:`~climate.weather.store.Measurement` has no
   quality field.
 * ``providers[].capabilities.variables`` and
@@ -56,11 +60,13 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import product
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 from climate import __version__ as PACKAGE_VERSION
+from climate.weather import vocabulary
 from climate.weather.config import WeatherConfig
 from climate.weather.providers import Capability, FreshnessStrategy
 from climate.weather.providers.base import WeatherProvider
@@ -91,34 +97,35 @@ MIN_SERIES_STEP_SECONDS = 60
 DEFAULT_SERIES_POINTS = 2000
 MAX_SERIES_POINTS = 10000
 
+#: Hard cap on ``to - from`` for ``/series`` (contract section 2.7). Without
+#: it a caller could name an unbounded window: ``step`` has no maximum, so
+#: bounding the *grid* alone still leaves the store query unbounded.
+MAX_SERIES_SPAN_SECONDS = 366 * 86400
+
+#: Hard cap on how many stored points one ``/series`` entry may materialize,
+#: passed to the store as ``limit`` so a dense window cannot pull an
+#: unbounded cursor into memory behind a 10 000-point response.
+MAX_SERIES_STORE_POINTS = 100000
+
 DEFAULT_FORECAST_HORIZON_HOURS = 48
 MAX_FORECAST_HORIZON_HOURS = 168
+
+MIN_STATS_BUCKET_SECONDS = 300
+MAX_STATS_BUCKETS = 1000
+
+#: The HTTP status boundaries ``/stats`` and ``/health`` classify against.
+HTTP_NOT_MODIFIED = 304
+HTTP_CLIENT_ERROR = 400
+HTTP_RATE_LIMITED = 429
+HTTP_SERVER_ERROR = 500
 
 AGG_VALUES = frozenset({"last", "first", "mean", "min", "max"})
 KIND_VALUES = frozenset({"observation", "model", "forecast"})
 
-#: Canonical unit id per variable (contract section 4).
-VARIABLE_UNITS: dict[str, str] = {
-    "temperature": "degC",
-    "apparent_temperature": "degC",
-    "dew_point": "degC",
-    "relative_humidity": "percent",
-    "pressure_msl": "hPa",
-    "pressure_surface": "hPa",
-    "wind_speed": "m_s",
-    "wind_gust": "m_s",
-    "wind_direction": "deg",
-    "precipitation": "mm",
-    "rain": "mm",
-    "precipitation_probability": "percent",
-    "cloud_cover": "percent",
-    "visibility": "m",
-    "shortwave_radiation": "w_m2",
-    "direct_radiation": "w_m2",
-    "diffuse_radiation": "w_m2",
-    "uv_index": "index",
-    "weather_code": "code",
-}
+#: Canonical unit id per variable (contract section 4). The table itself
+#: lives in :mod:`climate.weather.vocabulary`, the single source shared with
+#: the adapters; this name is kept as the API-local spelling of it.
+VARIABLE_UNITS: dict[str, str] = vocabulary.VARIABLES
 
 _CAPABILITY_TO_KIND = {
     Capability.CURRENT_OBSERVATION: "observation",
@@ -340,8 +347,15 @@ def _validate_locations(names: Iterable[str], config: WeatherConfig) -> None:
 
 
 def _validate_variables(names: Iterable[str]) -> None:
+    """Reject ids that are neither vocabulary rows nor ``x_`` extensions.
+
+    Contract section 4: the vocabulary is shared, not a filter. A provider
+    value with no row is stored as ``x_<provider_field>``, so an explicit
+    request for one must be honoured — with the unit reported as stored,
+    since the table assigns extensions none.
+    """
     for name in names:
-        if name not in VARIABLE_UNITS:
+        if not vocabulary.is_known(name):
             raise ApiError(
                 "unknown_variable",
                 f"unknown variable {name!r}",
@@ -367,6 +381,30 @@ def _enabled_provider_ids(providers: Sequence[WeatherProvider], config: WeatherC
     ]
 
 
+def _selected_locations(
+    query_params: Mapping[str, Sequence[str]], config: WeatherConfig
+) -> list[str]:
+    """The ``location`` selection: explicit and validated, else every label."""
+    requested = get_repeatable(query_params, "location")
+    if requested:
+        _validate_locations(requested, config)
+        return requested
+    return sorted(config.locations)
+
+
+def _selected_providers(
+    query_params: Mapping[str, Sequence[str]],
+    providers: Sequence[WeatherProvider],
+    default_ids: Sequence[str],
+) -> list[str]:
+    """The ``provider`` selection: explicit and validated, else ``default_ids``."""
+    requested = get_repeatable(query_params, "provider")
+    if requested:
+        _validate_providers(requested, providers)
+        return requested
+    return list(default_ids)
+
+
 # --- shared reading/provenance builders -------------------------------------
 
 
@@ -384,7 +422,7 @@ def _provenance(reading: Reading) -> dict[str, Any]:
         "provider": reading.provider,
         "source": reading.source,
         "model": reading.model,
-        "model_run_at": None,  # GAP: no separate model-run timestamp on Reading
+        "model_run_at": _format_time(reading.model_run_at),
         "station": None,  # GAP: no station field on Reading
         "interval_seconds": None,  # GAP: no interval_seconds field on Reading
         "fetch_id": reading.fetch_id,
@@ -445,6 +483,11 @@ def _build_reading(
 # --- GET /health -------------------------------------------------------------
 
 
+def _is_ok(status: int | None) -> bool:
+    """HTTP 2xx — the one definition of "this fetch succeeded"."""
+    return status is not None and 200 <= status < 300
+
+
 def _probe_store(store: WeatherStore) -> tuple[bool, int | None]:
     start = time.monotonic()
     try:
@@ -480,6 +523,87 @@ def _tracker_version(store: WeatherStore) -> str | None:
     return str(heartbeat["version"]) if heartbeat and heartbeat.get("version") else None
 
 
+def _health_store_snapshot(
+    store: WeatherStore, now: datetime
+) -> tuple[bool, int | None, int | None, dict[str, Any]]:
+    """``(reachable, latency_ms, fetch_count, newest_fetch)`` for ``/health``.
+
+    ``/health`` must answer even when the store is broken, so every call
+    here is defensive: a raise downgrades ``reachable`` instead of
+    propagating.
+    """
+    reachable, latency_ms = _probe_store(store)
+    fetch_count: int | None = None
+    newest_overall = None
+    if reachable:
+        try:
+            fetch_count = store.count_fetches()
+            newest_overall = store.latest_fetch()
+        except Exception:  # noqa: BLE001
+            reachable, fetch_count = False, None
+
+    newest_fetch: dict[str, Any] = {"requested_at": None, "age_seconds": None, "provider": None}
+    if newest_overall is not None:
+        newest_fetch = {
+            "requested_at": _format_time(newest_overall.requested_at),
+            "age_seconds": _age_seconds(now, newest_overall.requested_at),
+            "provider": newest_overall.provider,
+        }
+    return reachable, latency_ms, fetch_count, newest_fetch
+
+
+def _newest_success_at(store: WeatherStore, provider_id: str) -> str | None:
+    try:
+        success = next(
+            (r for r in store.iter_fetches(provider=provider_id) if _is_ok(r.status)), None
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    return _format_time(success.requested_at) if success is not None else None
+
+
+def _health_provider_row(
+    store: WeatherStore,
+    provider: WeatherProvider,
+    settings: Any,
+    now: datetime,
+    *,
+    enabled: bool,
+    reachable: bool,
+) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "provider": provider.id,
+        "enabled": enabled,
+        "newest_fetch_at": None,
+        "newest_fetch_age_seconds": None,
+        "newest_success_at": None,
+        "stale": False,
+    }
+    if not reachable:
+        return row
+    try:
+        newest = store.latest_fetch(provider=provider.id)
+    except Exception:  # noqa: BLE001
+        newest = None
+    if newest is None:
+        return row
+    age = _age_seconds(now, newest.requested_at)
+    threshold = provider.interval_seconds(settings) * DEFAULT_STALE_FACTOR
+    row["newest_fetch_at"] = _format_time(newest.requested_at)
+    row["newest_fetch_age_seconds"] = age
+    row["stale"] = age is not None and age > threshold
+    row["newest_success_at"] = _newest_success_at(store, provider.id)
+    return row
+
+
+def _health_status(reachable: bool, fetch_count: int | None, any_enabled_stale: bool) -> str:
+    if not reachable:
+        return "down"
+    if not fetch_count or any_enabled_stale:
+        return "degraded"
+    return "ok"
+
+
 @_guarded
 def health(
     store: WeatherStore,
@@ -488,41 +612,14 @@ def health(
     query_params: Mapping[str, Sequence[str]],
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
-    reachable, latency_ms = _probe_store(store)
-    fetch_count: int | None = None
-    newest_fetch = {"requested_at": None, "age_seconds": None, "provider": None}
+    reachable, latency_ms, fetch_count, newest_fetch = _health_store_snapshot(store, now)
     warnings: list[dict[str, Any]] = []
-
-    if reachable:
-        try:
-            fetch_count = store.count_fetches()
-            newest_overall = store.latest_fetch()
-        except Exception:  # noqa: BLE001
-            reachable = False
-            newest_overall = None
-    else:
-        newest_overall = None
-
-    if newest_overall is not None:
-        newest_fetch = {
-            "requested_at": _format_time(newest_overall.requested_at),
-            "age_seconds": _age_seconds(now, newest_overall.requested_at),
-            "provider": newest_overall.provider,
-        }
-
     provider_rows = []
     any_enabled_stale = False
+
     for provider in providers:
         settings = config.providers.get(provider.id)
         availability = provider.availability(settings, os.environ)
-        row: dict[str, Any] = {
-            "provider": provider.id,
-            "enabled": availability.enabled,
-            "newest_fetch_at": None,
-            "newest_fetch_age_seconds": None,
-            "newest_success_at": None,
-            "stale": False,
-        }
         if not availability.enabled and availability.reason:
             warnings.append(
                 _warning(
@@ -531,41 +628,14 @@ def health(
                     provider=provider.id,
                 )
             )
-        if reachable:
-            try:
-                newest = store.latest_fetch(provider=provider.id)
-            except Exception:  # noqa: BLE001
-                newest = None
-            if newest is not None:
-                age = _age_seconds(now, newest.requested_at)
-                threshold = provider.interval_seconds(settings) * DEFAULT_STALE_FACTOR
-                stale = age is not None and age > threshold
-                row["newest_fetch_at"] = _format_time(newest.requested_at)
-                row["newest_fetch_age_seconds"] = age
-                row["stale"] = stale
-                if availability.enabled and stale:
-                    any_enabled_stale = True
-                try:
-                    success = next(
-                        (
-                            record
-                            for record in store.iter_fetches(provider=provider.id)
-                            if record.status is not None and 200 <= record.status < 300
-                        ),
-                        None,
-                    )
-                except Exception:  # noqa: BLE001
-                    success = None
-                if success is not None:
-                    row["newest_success_at"] = _format_time(success.requested_at)
+        row = _health_provider_row(
+            store, provider, settings, now, enabled=availability.enabled, reachable=reachable
+        )
+        if availability.enabled and row["stale"]:
+            any_enabled_stale = True
         provider_rows.append(row)
 
-    if not reachable:
-        status = "down"
-    elif not fetch_count or any_enabled_stale:
-        status = "degraded"
-    else:
-        status = "ok"
+    status = _health_status(reachable, fetch_count, any_enabled_stale)
 
     body = {
         "status": status,
@@ -593,6 +663,73 @@ def health(
 # --- GET /providers ----------------------------------------------------------
 
 
+def _provider_fetch_state(store: WeatherStore, provider_id: str) -> dict[str, Any]:
+    newest = _store_call(store.latest_fetch, provider=provider_id)
+    success = next(
+        (r for r in _store_call(store.iter_fetches, provider=provider_id) if _is_ok(r.status)),
+        None,
+    )
+    return {
+        "newest_fetch_at": _format_time(newest.requested_at) if newest is not None else None,
+        "newest_success_at": _format_time(success.requested_at) if success is not None else None,
+        "last_status": newest.status if newest is not None else None,
+    }
+
+
+def _provider_quota(provider: WeatherProvider) -> dict[str, Any]:
+    quota = provider.quota
+    return {
+        "calls_per_day": quota.calls_per_day if quota else None,
+        "calls_per_minute": quota.calls_per_minute if quota else None,
+        "weight_per_call": quota.call_weight if quota else None,
+        "source": quota.source if quota else "",
+    }
+
+
+def _provider_row(
+    store: WeatherStore,
+    config: WeatherConfig,
+    provider: WeatherProvider,
+    settings: Any,
+    availability: Any,
+) -> dict[str, Any]:
+    kinds = sorted(
+        {_CAPABILITY_TO_KIND[c] for c in provider.capabilities if c in _CAPABILITY_TO_KIND}
+    )
+    env_var = provider.auth.env_var
+    return {
+        "provider": provider.id,
+        # GAP: no display title on the provider contract; derived from id.
+        "title": provider.id.replace("-", " ").title(),
+        "kind": kinds[0] if kinds else "model",
+        "enabled": availability.enabled,
+        "enabled_reason": availability.reason,
+        "auth_required": provider.auth.required,
+        "credential_present": bool(os.environ.get(env_var)) if env_var else True,
+        "capabilities": {
+            "variables": [],  # GAP: capabilities are kind-level, not variable-level
+            "kinds": kinds,
+            "forecast_horizon_hours": None,  # GAP: not declared on the contract
+            # ASSUMPTION: config has no per-provider location matrix, so every
+            # provider is treated as targeting every configured location.
+            "locations": sorted(config.locations),
+        },
+        "freshness": {
+            "strategy": str(provider.freshness) if provider.freshness else None,
+            "interval_seconds": provider.interval_seconds(settings),
+            "expected_update_seconds": None,  # GAP
+            "notes": None,  # GAP
+        },
+        "quota": _provider_quota(provider),
+        "attribution": (
+            provider.attribution.as_dict()
+            if provider.attribution
+            else {"text": "", "url": "", "licence": None}
+        ),
+        "state": _provider_fetch_state(store, provider.id),
+    }
+
+
 @_guarded
 def list_providers(
     store: WeatherStore,
@@ -613,74 +750,7 @@ def list_providers(
         availability = provider.availability(settings, os.environ)
         if enabled_filter is not None and availability.enabled != enabled_filter:
             continue
-
-        kinds = sorted(
-            {_CAPABILITY_TO_KIND[c] for c in provider.capabilities if c in _CAPABILITY_TO_KIND}
-        )
-        primary_kind = kinds[0] if kinds else "model"
-
-        newest_fetch_at = newest_success_at = last_status = None
-        newest = _store_call(store.latest_fetch, provider=provider.id)
-        if newest is not None:
-            newest_fetch_at = _format_time(newest.requested_at)
-            last_status = newest.status
-        success = next(
-            (
-                record
-                for record in _store_call(store.iter_fetches, provider=provider.id)
-                if record.status is not None and 200 <= record.status < 300
-            ),
-            None,
-        )
-        if success is not None:
-            newest_success_at = _format_time(success.requested_at)
-
-        env_var = provider.auth.env_var
-        credential_present = True if not env_var else bool(os.environ.get(env_var))
-
-        rows.append(
-            {
-                "provider": provider.id,
-                # GAP: no display title on the provider contract; derived from id.
-                "title": provider.id.replace("-", " ").title(),
-                "kind": primary_kind,
-                "enabled": availability.enabled,
-                "enabled_reason": availability.reason,
-                "auth_required": provider.auth.required,
-                "credential_present": credential_present,
-                "capabilities": {
-                    "variables": [],  # GAP: capabilities are kind-level, not variable-level
-                    "kinds": kinds,
-                    "forecast_horizon_hours": None,  # GAP: not declared on the contract
-                    # ASSUMPTION: config has no per-provider location matrix,
-                    # so every provider is treated as targeting every
-                    # configured location.
-                    "locations": sorted(config.locations),
-                },
-                "freshness": {
-                    "strategy": str(provider.freshness) if provider.freshness else None,
-                    "interval_seconds": provider.interval_seconds(settings),
-                    "expected_update_seconds": None,  # GAP
-                    "notes": None,  # GAP
-                },
-                "quota": {
-                    "calls_per_day": provider.quota.calls_per_day if provider.quota else None,
-                    "calls_per_minute": provider.quota.calls_per_minute if provider.quota else None,
-                    "weight_per_call": provider.quota.call_weight if provider.quota else None,
-                    "source": provider.quota.source if provider.quota else "",
-                },
-                "attribution": (
-                    provider.attribution.as_dict()
-                    if provider.attribution
-                    else {"text": "", "url": "", "licence": None}
-                ),
-                "state": {
-                    "newest_fetch_at": newest_fetch_at,
-                    "newest_success_at": newest_success_at,
-                    "last_status": last_status,
-                },
-            }
-        )
+        rows.append(_provider_row(store, config, provider, settings, availability))
 
     return 200, {"generated_at": _format_time(now), "providers": rows, "warnings": []}
 
@@ -717,6 +787,30 @@ def list_locations(
 # --- GET /latest ---------------------------------------------------------------
 
 
+def _newest_reading(
+    store: WeatherStore, pid: str, label: str, kinds: Sequence[str]
+) -> Reading | None:
+    """The newest stored reading for one (provider, location) across ``kinds``."""
+    candidates = [
+        reading
+        for reading in (
+            _store_call(store.latest_reading, provider=pid, location=label, kind=kind)
+            for kind in kinds
+        )
+        if reading is not None
+    ]
+    return max(candidates, key=lambda r: r.observed_at) if candidates else None
+
+
+def _missing_reason(
+    store: WeatherStore, provider: WeatherProvider, settings: Any, label: str
+) -> str:
+    if not provider.availability(settings, os.environ).enabled:
+        return "provider_disabled"
+    has_fetches = _store_call(store.count_fetches, provider=provider.id, location=label) > 0
+    return "no_fresh_reading" if has_fetches else "no_data"
+
+
 @_guarded
 def latest(
     store: WeatherStore,
@@ -725,18 +819,10 @@ def latest(
     query_params: Mapping[str, Sequence[str]],
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
-    requested_locations = get_repeatable(query_params, "location")
-    if requested_locations:
-        _validate_locations(requested_locations, config)
-    else:
-        requested_locations = sorted(config.locations)
-
-    requested_providers = get_repeatable(query_params, "provider")
-    if requested_providers:
-        _validate_providers(requested_providers, providers)
-        provider_ids = requested_providers
-    else:
-        provider_ids = _enabled_provider_ids(providers, config)
+    requested_locations = _selected_locations(query_params, config)
+    provider_ids = _selected_providers(
+        query_params, providers, _enabled_provider_ids(providers, config)
+    )
 
     requested_variables = get_repeatable(query_params, "variables")
     _validate_variables(requested_variables)
@@ -755,29 +841,15 @@ def latest(
         provider = provider_by_id[pid]
         settings = config.providers.get(pid)
         for label in requested_locations:
-            candidates = [
-                reading
-                for reading in (
-                    _store_call(store.latest_reading, provider=pid, location=label, kind=kind)
-                    for kind in requested_kinds
-                )
-                if reading is not None
-            ]
-            reading = max(candidates, key=lambda r: r.observed_at) if candidates else None
+            reading = _newest_reading(store, pid, label, requested_kinds)
             if reading is None:
-                availability = provider.availability(settings, os.environ)
-                if not availability.enabled:
-                    reason = "provider_disabled"
-                else:
-                    has_fetches = _store_call(store.count_fetches, provider=pid, location=label) > 0
-                    reason = "no_fresh_reading" if has_fetches else "no_data"
+                reason = _missing_reason(store, provider, settings, label)
                 missing.append({"provider": pid, "location": label, "reason": reason})
                 continue
             reading_dict, stale = _build_reading(
                 reading, provider, settings, max_age, now, requested_variables
             )
-            if stale:
-                any_stale = True
+            any_stale = any_stale or stale
             readings_out.append(reading_dict)
 
     readings_out.sort(key=lambda row: (row["provider"], row["location"]))
@@ -798,16 +870,30 @@ def latest(
 # --- GET /series ---------------------------------------------------------------
 
 
-def _build_grid(from_dt: datetime, to_dt: datetime, step: int) -> list[datetime]:
+def _grid_bounds(from_dt: datetime, to_dt: datetime, step: int) -> tuple[int, int]:
+    """``(first_epoch, bucket_count)`` for the epoch-aligned grid — arithmetic only.
+
+    Counting the buckets *before* materializing them is what keeps
+    ``/series`` bounded: a multi-year window at the 60 s minimum step names
+    millions of buckets, and the old loop allocated every one of them before
+    ``max_points`` was applied (contract section 2.7's ceiling arrived far
+    too late to protect the worker).
+    """
     from_epoch = int(from_dt.timestamp())
     to_epoch = int(to_dt.timestamp())
-    first = ((from_epoch + step - 1) // step) * step
-    grid = []
-    t = first
-    while t < to_epoch:
-        grid.append(datetime.fromtimestamp(t, tz=UTC))
-        t += step
-    return grid
+    first = -(-from_epoch // step) * step  # first multiple of step at or after from
+    count = max(0, -(-(to_epoch - first) // step))  # ceil((to - first) / step)
+    return first, count
+
+
+def _build_grid(
+    from_dt: datetime, to_dt: datetime, step: int, *, max_points: int | None = None
+) -> list[datetime]:
+    """The grid instants, never more than ``max_points`` of them."""
+    first, count = _grid_bounds(from_dt, to_dt, step)
+    if max_points is not None:
+        count = min(count, max_points)
+    return [datetime.fromtimestamp(first + index * step, tz=UTC) for index in range(count)]
 
 
 def _aggregate(bucket: list, agg: str):
@@ -883,6 +969,99 @@ def _build_series_entry(
     }
 
 
+def _series_window(
+    query_params: Mapping[str, Sequence[str]], now: datetime
+) -> tuple[datetime, datetime]:
+    """The requested ``from``/``to``, ordered and span-capped."""
+    to_raw = get_str(query_params, "to")
+    to_dt = _parse_time_param("to", to_raw) if to_raw else now
+    from_raw = get_str(query_params, "from")
+    from_dt = _parse_time_param("from", from_raw) if from_raw else to_dt - timedelta(hours=24)
+    if from_dt >= to_dt:
+        raise ApiError(
+            "invalid_parameter",
+            "from must be earlier than to",
+            400,
+            {"parameter": "from", "value": from_raw},
+        )
+    span_seconds = int((to_dt - from_dt).total_seconds())
+    if span_seconds > MAX_SERIES_SPAN_SECONDS:
+        raise ApiError(
+            "invalid_parameter",
+            f"to - from must not exceed {MAX_SERIES_SPAN_SECONDS} seconds "
+            f"({MAX_SERIES_SPAN_SECONDS // 86400} days)",
+            400,
+            {
+                "parameter": "from",
+                "value": _format_time(from_dt),
+                "span_seconds": span_seconds,
+                "max_span_seconds": MAX_SERIES_SPAN_SECONDS,
+            },
+        )
+    return from_dt, to_dt
+
+
+def _series_agg(query_params: Mapping[str, Sequence[str]]) -> str:
+    agg = get_str(query_params, "agg") or "last"
+    if agg not in AGG_VALUES:
+        raise ApiError(
+            "invalid_parameter",
+            "agg must be one of last, first, mean, min, max",
+            400,
+            {"parameter": "agg", "value": agg},
+        )
+    return agg
+
+
+def _series_entries(
+    store: WeatherStore,
+    variable: str,
+    *,
+    provider_ids: Sequence[str],
+    locations: Sequence[str],
+    kinds: Sequence[str],
+    since: datetime,
+    until: datetime,
+    grid: list[datetime],
+    step: int,
+    agg: str,
+) -> tuple[list[dict[str, Any]], bool]:
+    """One entry per (provider, location, kind) with data, plus "hit the cap"."""
+    entries: list[dict[str, Any]] = []
+    capped = False
+    for pid, label, kind in product(provider_ids, locations, kinds):
+        points = _store_call(
+            store.series,
+            variable,
+            provider=pid,
+            location=label,
+            kind=kind,
+            since=since,
+            until=until,
+            limit=MAX_SERIES_STORE_POINTS,
+        )
+        capped = capped or len(points) >= MAX_SERIES_STORE_POINTS
+        points = [point for point in points if point.observed_at < until]
+        if not points:
+            continue
+        entries.append(_build_series_entry(variable, pid, label, kind, grid, step, agg, points))
+    return entries, capped
+
+
+def _series_unit(variable: str, entries: Sequence[Mapping[str, Any]]) -> str:
+    """The response-level unit.
+
+    A vocabulary variable has one by definition. An ``x_`` extension does
+    not — the table assigns extensions no unit — so its unit is reported as
+    stored, falling back to the documented ``other``.
+    """
+    canonical = vocabulary.unit_for(variable)
+    if canonical is not None:
+        return canonical
+    stored = {entry["unit"] for entry in entries if entry["unit"]}
+    return stored.pop() if len(stored) == 1 else vocabulary.FALLBACK_UNIT
+
+
 @_guarded
 def series(
     store: WeatherStore,
@@ -896,29 +1075,11 @@ def series(
         raise ApiError("missing_parameter", "variable is required", 400, {"parameter": "variable"})
     _validate_variables([variable])
 
-    requested_locations = get_repeatable(query_params, "location")
-    if requested_locations:
-        _validate_locations(requested_locations, config)
-    else:
-        requested_locations = sorted(config.locations)
-
-    requested_providers = get_repeatable(query_params, "provider")
-    if requested_providers:
-        _validate_providers(requested_providers, providers)
-    else:
-        requested_providers = _enabled_provider_ids(providers, config)
-
-    to_raw = get_str(query_params, "to")
-    to_dt = _parse_time_param("to", to_raw) if to_raw else now
-    from_raw = get_str(query_params, "from")
-    from_dt = _parse_time_param("from", from_raw) if from_raw else to_dt - timedelta(hours=24)
-    if from_dt >= to_dt:
-        raise ApiError(
-            "invalid_parameter",
-            "from must be earlier than to",
-            400,
-            {"parameter": "from", "value": from_raw},
-        )
+    requested_locations = _selected_locations(query_params, config)
+    requested_providers = _selected_providers(
+        query_params, providers, _enabled_provider_ids(providers, config)
+    )
+    from_dt, to_dt = _series_window(query_params, now)
 
     requested_kinds = get_repeatable(query_params, "kind") or ["observation", "model"]
     _validate_kinds(requested_kinds, allow_forecast=True)
@@ -926,42 +1087,33 @@ def series(
     step = get_int(
         query_params, "step", default=DEFAULT_SERIES_STEP_SECONDS, minimum=MIN_SERIES_STEP_SECONDS
     )
-    agg = get_str(query_params, "agg") or "last"
-    if agg not in AGG_VALUES:
-        raise ApiError(
-            "invalid_parameter",
-            "agg must be one of last, first, mean, min, max",
-            400,
-            {"parameter": "agg", "value": agg},
-        )
-    max_points = get_int(query_params, "max_points", default=DEFAULT_SERIES_POINTS, minimum=1)
-    max_points = min(max_points, MAX_SERIES_POINTS)
+    agg = _series_agg(query_params)
+    max_points = min(
+        get_int(query_params, "max_points", default=DEFAULT_SERIES_POINTS, minimum=1),
+        MAX_SERIES_POINTS,
+    )
 
-    grid = _build_grid(from_dt, to_dt, step)
-    truncated = False
-    if len(grid) > max_points:
-        grid = grid[:max_points]
-        truncated = True
+    # Size the grid arithmetically first, then build at most ``max_points``
+    # of it: the caller's window is never allocated in full (contract 2.7).
+    # Truncation keeps the EARLIEST buckets, so the effective window ends at
+    # the last kept bucket and the store query is bounded to it too.
+    bucket_count = _grid_bounds(from_dt, to_dt, step)[1]
+    truncated = bucket_count > max_points
+    grid = _build_grid(from_dt, to_dt, step, max_points=max_points)
+    effective_to = grid[-1] + timedelta(seconds=step) if truncated and grid else to_dt
 
-    entries = []
-    for pid in requested_providers:
-        for label in requested_locations:
-            for kind in requested_kinds:
-                points = _store_call(
-                    store.series,
-                    variable,
-                    provider=pid,
-                    location=label,
-                    kind=kind,
-                    since=from_dt,
-                    until=to_dt,
-                )
-                points = [point for point in points if point.observed_at < to_dt]
-                if not points:
-                    continue
-                entries.append(
-                    _build_series_entry(variable, pid, label, kind, grid, step, agg, points)
-                )
+    entries, capped = _series_entries(
+        store,
+        variable,
+        provider_ids=requested_providers,
+        locations=requested_locations,
+        kinds=requested_kinds,
+        since=from_dt,
+        until=effective_to,
+        grid=grid,
+        step=step,
+        agg=agg,
+    )
 
     warnings: list[dict[str, Any]] = []
     if not entries:
@@ -969,14 +1121,29 @@ def series(
             _warning("no_data", f"No stored fetch covers the requested window for {variable}.")
         )
     if truncated:
-        warnings.append(_warning("truncated", "The result was truncated to max_points."))
+        warnings.append(
+            _warning(
+                "truncated",
+                f"The requested window holds {bucket_count} buckets at step={step}; "
+                f"the earliest {max_points} were returned (max_points, ceiling "
+                f"{MAX_SERIES_POINTS}).",
+            )
+        )
+    if capped:
+        warnings.append(
+            _warning(
+                "truncated",
+                f"A series matched more than {MAX_SERIES_STORE_POINTS} stored points; "
+                "the oldest were used. Narrow the window or raise step.",
+            )
+        )
 
     return 200, {
         "generated_at": _format_time(now),
         "variable": variable,
-        "unit": VARIABLE_UNITS[variable],
+        "unit": _series_unit(variable, entries),
         "from": _format_time(grid[0]) if grid else _format_time(from_dt),
-        "to": _format_time(to_dt),
+        "to": _format_time(effective_to),
         "step_seconds": step,
         "agg": agg,
         "point_count": len(grid),
@@ -988,17 +1155,37 @@ def series(
 # --- GET /forecast ---------------------------------------------------------------
 
 
+def _issue_time(points_by_variable: Mapping[str, Sequence[Any]]) -> datetime | None:
+    """The provider's own model run time for one fetch, or ``None``.
+
+    Every point of a fetch comes from the same response, so they agree; the
+    newest is taken defensively. ``None`` means the provider stated no issue
+    time — adapters never substitute the fetch time for it.
+    """
+    runs = {
+        point.model_run_at
+        for points in points_by_variable.values()
+        for point in points
+        if point.model_run_at is not None
+    }
+    return max(runs) if runs else None
+
+
 def _select_forecast_issue(
     store: WeatherStore,
     pid: str,
     label: str,
     variables: Sequence[str],
     issued_before: datetime | None,
+    now: datetime,
 ) -> dict[str, Any] | None:
     by_fetch: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
     for variable in variables:
+        # ``since=now``: a point before ``now`` is not a forecast and is
+        # excluded from the response anyway, so there is no reason to read the
+        # provider's whole stored history to throw it away.
         for point in _store_call(
-            store.series, variable, provider=pid, location=label, kind="forecast"
+            store.series, variable, provider=pid, location=label, kind="forecast", since=now
         ):
             by_fetch[point.fetch_id][variable].append(point)
     if not by_fetch:
@@ -1009,20 +1196,24 @@ def _select_forecast_issue(
         record = _store_call(store.get_fetch, fetch_id)
         if record is None:
             continue
-        # ASSUMPTION / GAP: Reading has no distinct model-run/issue timestamp,
-        # so the fetch's own requested_at stands in for issued_at. This
-        # conflates "when the tracker asked" with "when the model was run".
-        issued_at = record.requested_at
+        # The provider's own model-run time is the issue time. Only when the
+        # provider states none does the fetch time stand in for it, and the
+        # entry then says so with ``issued_at_estimated``.
+        model_run_at = _issue_time(points_by_variable)
+        issued_at = model_run_at if model_run_at is not None else record.requested_at
         if issued_before is not None and issued_at > issued_before:
             continue
-        candidates.append((issued_at, fetch_id, record, points_by_variable))
+        candidates.append((issued_at, fetch_id, record, model_run_at, points_by_variable))
     if not candidates:
         return None
-    issued_at, fetch_id, record, points_by_variable = max(candidates, key=lambda item: item[0])
+    issued_at, fetch_id, record, model_run_at, points_by_variable = max(
+        candidates, key=lambda item: item[0]
+    )
     return {
         "provider": pid,
         "location": label,
         "issued_at": issued_at,
+        "model_run_at": model_run_at,
         "requested_at": record.requested_at,
         "fetch_id": fetch_id,
         "schema_version": record.schema_version,
@@ -1030,72 +1221,81 @@ def _select_forecast_issue(
     }
 
 
+def _thin_to_step(points: Sequence[Any], step_seconds: int) -> list[Any]:
+    """Thin one variable's points to ``step_seconds`` on the WALL-CLOCK grid.
+
+    Not relative to the issue time: a real fetch happens at e.g. 19:33:37, so
+    no top-of-the-hour forecast point is ever a whole number of steps after it
+    (found live: every forecast came back with 0 points). A series that sits
+    off the wall-clock grid entirely is thinned from its own first point
+    instead, so the filter can never silently empty it.
+    """
+    kept = [p for p in points if int(p.observed_at.timestamp()) % step_seconds == 0]
+    if kept or not points:
+        return kept
+    anchor = min(p.observed_at for p in points)
+    return [p for p in points if int((p.observed_at - anchor).total_seconds()) % step_seconds == 0]
+
+
 def _build_forecast_entry(
-    group: dict[str, Any], horizon_hours: int, step_hours: int
+    group: dict[str, Any], horizon_hours: int, step_hours: int, now: datetime
 ) -> dict[str, Any]:
     issued_at = group["issued_at"]
-    horizon_end = issued_at + timedelta(hours=horizon_hours)
+    # The horizon is measured from the REQUEST, not from the issue: an issue
+    # fetched hours ago still carries valid future points, and measuring from
+    # its own issue time threw them away. Points already in the past are not
+    # a forecast, so they are excluded.
+    horizon_end = now + timedelta(hours=horizon_hours)
     step_seconds = step_hours * 3600
 
     lookup: dict[str, dict[datetime, Any]] = {}
+    units: dict[str, str] = {}
     valid_ats: set[datetime] = set()
     sources: set[str] = set()
     models: set[Any] = set()
     for variable, points in group["points_by_variable"].items():
-        in_horizon = [p for p in points if issued_at <= p.observed_at <= horizon_end]
-        # Thin to the step on the WALL-CLOCK grid, not relative to
-        # ``issued_at``: a real fetch happens at e.g. 19:33:37, so no
-        # top-of-the-hour forecast point is ever a whole number of steps after
-        # it (found live: every forecast came back with 0 points). A series
-        # that sits off the grid entirely is thinned from its own first point
-        # instead, so the filter can never silently empty it.
-        kept = [p for p in in_horizon if int(p.observed_at.timestamp()) % step_seconds == 0]
-        if not kept and in_horizon:
-            anchor = min(p.observed_at for p in in_horizon)
-            kept = [
-                p
-                for p in in_horizon
-                if int((p.observed_at - anchor).total_seconds()) % step_seconds == 0
-            ]
+        in_horizon = [p for p in points if now <= p.observed_at <= horizon_end]
         lookup[variable] = {}
-        for point in kept:
+        for point in _thin_to_step(in_horizon, step_seconds):
             lookup[variable][point.observed_at] = point.value
+            units.setdefault(variable, point.unit)
             valid_ats.add(point.observed_at)
             sources.add(point.source)
             models.add(point.model)
 
     present_variables = sorted(variable for variable, values in lookup.items() if values)
-    points_out = []
-    for valid_at in sorted(valid_ats):
-        points_out.append(
-            {
-                "valid_at": _format_time(valid_at),
-                "lead_seconds": int((valid_at - issued_at).total_seconds()),
-                "values": {
-                    variable: lookup[variable].get(valid_at) for variable in present_variables
-                },
-            }
-        )
+    points_out = [
+        {
+            "valid_at": _format_time(valid_at),
+            "lead_seconds": int((valid_at - issued_at).total_seconds()),
+            "values": {variable: lookup[variable].get(valid_at) for variable in present_variables},
+        }
+        for valid_at in sorted(valid_ats)
+    ]
 
     return {
         "provider": group["provider"],
         "location": group["location"],
         "kind": "forecast",
         "issued_at": _format_time(issued_at),
+        "issued_at_estimated": group["model_run_at"] is None,
         "requested_at": _format_time(group["requested_at"]),
         "fetch_id": group["fetch_id"],
         "provenance": {
             "provider": group["provider"],
             "source": next(iter(sources)) if len(sources) == 1 else (next(iter(sources), "") or ""),
             "model": next(iter(models)) if len(models) == 1 else None,
-            "model_run_at": None,  # GAP
-            "station": None,  # GAP
-            "interval_seconds": None,  # GAP
+            "model_run_at": _format_time(group["model_run_at"]),
+            "station": None,  # GAP: no station field on Reading
+            "interval_seconds": None,  # GAP: no interval_seconds field on Reading
             "fetch_id": group["fetch_id"],
             "schema_version": group["schema_version"],
         },
         "variables": present_variables,
-        "units": {variable: VARIABLE_UNITS[variable] for variable in present_variables},
+        "units": {
+            variable: vocabulary.unit_for(variable) or units.get(variable, vocabulary.FALLBACK_UNIT)
+            for variable in present_variables
+        },
         "point_count": len(points_out),
         "points": points_out,
     }
@@ -1109,26 +1309,23 @@ def forecast(
     query_params: Mapping[str, Sequence[str]],
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
-    requested_locations = get_repeatable(query_params, "location")
-    if requested_locations:
-        _validate_locations(requested_locations, config)
-    else:
-        requested_locations = sorted(config.locations)
-
-    requested_providers = get_repeatable(query_params, "provider")
-    if requested_providers:
-        _validate_providers(requested_providers, providers)
-    else:
-        requested_providers = [
+    requested_locations = _selected_locations(query_params, config)
+    requested_providers = _selected_providers(
+        query_params,
+        providers,
+        [
             provider.id
             for provider in providers
             if Capability.FORECAST in provider.capabilities
             and provider.availability(config.providers.get(provider.id), os.environ).enabled
-        ]
+        ],
+    )
 
     requested_variables = get_repeatable(query_params, "variables")
     _validate_variables(requested_variables)
-    variables_to_query = requested_variables or sorted(VARIABLE_UNITS)
+    # The default is the vocabulary: an ``x_`` extension has no enumerable id,
+    # so it is returned when it is asked for by name.
+    variables_to_query = requested_variables or sorted(vocabulary.VARIABLES)
 
     issued_raw = get_str(query_params, "issued_at")
     issued_before = _parse_time_param("issued_at", issued_raw) if issued_raw else None
@@ -1144,10 +1341,12 @@ def forecast(
     forecasts_out = []
     for pid in requested_providers:
         for label in requested_locations:
-            group = _select_forecast_issue(store, pid, label, variables_to_query, issued_before)
+            group = _select_forecast_issue(
+                store, pid, label, variables_to_query, issued_before, now
+            )
             if group is None:
                 continue
-            forecasts_out.append(_build_forecast_entry(group, horizon_hours, step_hours))
+            forecasts_out.append(_build_forecast_entry(group, horizon_hours, step_hours, now))
 
     warnings: list[dict[str, Any]] = []
     if not forecasts_out:
@@ -1191,15 +1390,137 @@ def _build_stat_buckets(
                 "t": _format_time(t),
                 "due_count": due_per_bucket,
                 "stored_count": len(in_bucket),
-                "ok_count": sum(
-                    1
-                    for record in in_bucket
-                    if record.status is not None and 200 <= record.status < 300
-                ),
+                "ok_count": sum(1 for record in in_bucket if _is_ok(record.status)),
             }
         )
         t = bucket_end
     return buckets
+
+
+def _stats_window(
+    query_params: Mapping[str, Sequence[str]], now: datetime
+) -> tuple[datetime, datetime, int]:
+    to_raw = get_str(query_params, "to")
+    from_raw = get_str(query_params, "from")
+    to_dt = _parse_time_param("to", to_raw) if to_raw else now
+    if from_raw:
+        from_dt = _parse_time_param("from", from_raw)
+    else:
+        from_dt = to_dt - timedelta(seconds=_parse_window(get_str(query_params, "window") or "24h"))
+    if from_dt >= to_dt:
+        raise ApiError(
+            "invalid_parameter",
+            "from must be earlier than to",
+            400,
+            {"parameter": "from", "value": from_raw},
+        )
+    return from_dt, to_dt, int((to_dt - from_dt).total_seconds())
+
+
+def _stats_bucket(query_params: Mapping[str, Sequence[str]], window_seconds: int) -> int | None:
+    bucket = get_int(query_params, "bucket", minimum=MIN_STATS_BUCKET_SECONDS)
+    if bucket is not None and window_seconds / bucket > MAX_STATS_BUCKETS:
+        raise ApiError(
+            "invalid_parameter",
+            f"window / bucket must not exceed {MAX_STATS_BUCKETS}",
+            400,
+            {"parameter": "bucket", "value": str(bucket)},
+        )
+    return bucket
+
+
+def _status_counts(records: Sequence[Any]) -> dict[str, int]:
+    """The per-status tallies of one (provider, location) window."""
+    statuses = [record.status for record in records]
+    return {
+        "ok_count": sum(1 for status in statuses if _is_ok(status)),
+        "not_modified_count": sum(1 for status in statuses if status == HTTP_NOT_MODIFIED),
+        "client_error_count": sum(
+            1
+            for status in statuses
+            if status is not None
+            and HTTP_CLIENT_ERROR <= status < HTTP_SERVER_ERROR
+            and status != HTTP_RATE_LIMITED
+        ),
+        "rate_limited_count": sum(1 for status in statuses if status == HTTP_RATE_LIMITED),
+        "server_error_count": sum(
+            1 for status in statuses if status is not None and status >= HTTP_SERVER_ERROR
+        ),
+        "transport_error_count": sum(1 for status in statuses if status is None),
+    }
+
+
+def _cadence(records: Sequence[Any], now: datetime) -> dict[str, Any]:
+    """When the fetches in this window happened, and how evenly."""
+    ordered = sorted(record.requested_at for record in records)
+    gaps = [(ordered[i] - ordered[i - 1]).total_seconds() for i in range(1, len(ordered))]
+    newest_fetch_at = ordered[-1] if ordered else None
+    return {
+        "first_fetch_at": _format_time(ordered[0] if ordered else None),
+        "newest_fetch_at": _format_time(newest_fetch_at),
+        "newest_fetch_age_seconds": _age_seconds(now, newest_fetch_at),
+        "mean_interval_seconds": round(sum(gaps) / len(gaps), 1) if gaps else None,
+        "longest_gap_seconds": int(max(gaps)) if gaps else None,
+    }
+
+
+def _stats_row(
+    store: WeatherStore,
+    provider: WeatherProvider,
+    settings: Any,
+    label: str | None,
+    *,
+    from_dt: datetime,
+    to_dt: datetime,
+    window_seconds: int,
+    bucket: int | None,
+    now: datetime,
+) -> dict[str, Any]:
+    pid = provider.id
+    records = list(
+        _store_call(store.iter_fetches, provider=pid, location=label, since=from_dt, until=to_dt)
+    )
+    interval_seconds = provider.interval_seconds(settings)
+    due_count = int(window_seconds // interval_seconds) if interval_seconds else 0
+    stored_count = len(records)
+
+    row: dict[str, Any] = {
+        "provider": pid,
+        "location": label,
+        "enabled": provider.availability(settings, os.environ).enabled,
+        "freshness_strategy": str(provider.freshness) if provider.freshness else None,
+        "interval_seconds": interval_seconds,
+        "due_count": due_count,
+        "due_estimated": provider.freshness != FreshnessStrategy.INTERVAL,
+        "stored_count": stored_count,
+        "completeness": round(stored_count / due_count, 4) if due_count else None,
+    }
+    row.update(_status_counts(records))
+    row["reading_count"] = _store_call(
+        store.count_readings, provider=pid, location=label, since=from_dt, until=to_dt
+    )
+    row["bytes_stored"] = sum(len(record.body) for record in records)
+    row.update(_cadence(records, now))
+    row["buckets"] = (
+        _build_stat_buckets(records, from_dt, to_dt, bucket, interval_seconds) if bucket else None
+    )
+    return row
+
+
+def _stats_warnings(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+    pid, label = row["provider"], row["location"]
+    warnings = []
+    if row["due_estimated"]:
+        warnings.append(
+            _warning(
+                "due_estimated", f"{pid} due counts are estimated.", provider=pid, location=label
+            )
+        )
+    if not row["enabled"]:
+        warnings.append(
+            _warning("provider_disabled", f"{pid} is disabled.", provider=pid, location=label)
+        )
+    return warnings
 
 
 @_guarded
@@ -1210,142 +1531,37 @@ def stats(
     query_params: Mapping[str, Sequence[str]],
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
-    to_raw = get_str(query_params, "to")
-    from_raw = get_str(query_params, "from")
-    to_dt = _parse_time_param("to", to_raw) if to_raw else now
-    if from_raw:
-        from_dt = _parse_time_param("from", from_raw)
-    else:
-        window_text = get_str(query_params, "window") or "24h"
-        from_dt = to_dt - timedelta(seconds=_parse_window(window_text))
-    if from_dt >= to_dt:
-        raise ApiError(
-            "invalid_parameter",
-            "from must be earlier than to",
-            400,
-            {"parameter": "from", "value": from_raw},
-        )
-    window_seconds = int((to_dt - from_dt).total_seconds())
-
-    requested_providers = get_repeatable(query_params, "provider")
-    if requested_providers:
-        _validate_providers(requested_providers, providers)
-    else:
-        requested_providers = [provider.id for provider in providers]
-
-    requested_locations = get_repeatable(query_params, "location")
-    if requested_locations:
-        _validate_locations(requested_locations, config)
-    else:
-        requested_locations = sorted(config.locations) or [None]
-
-    bucket = get_int(query_params, "bucket", minimum=300)
-    if bucket is not None and window_seconds / bucket > 1000:
-        raise ApiError(
-            "invalid_parameter",
-            "window / bucket must not exceed 1000",
-            400,
-            {"parameter": "bucket", "value": str(bucket)},
-        )
+    from_dt, to_dt, window_seconds = _stats_window(query_params, now)
+    requested_providers = _selected_providers(
+        query_params, providers, [provider.id for provider in providers]
+    )
+    # Unlike the other routes, /stats reports fetch activity even with no
+    # configured location at all: ``[None]`` means "any location".
+    requested_locations: Sequence[str | None] = _selected_locations(query_params, config) or [None]
+    bucket = _stats_bucket(query_params, window_seconds)
 
     provider_by_id = {provider.id: provider for provider in providers}
     rows = []
     warnings: list[dict[str, Any]] = []
-    total_due = 0
-    total_stored = 0
-    total_bytes = 0
 
-    for pid in requested_providers:
-        provider = provider_by_id[pid]
-        settings = config.providers.get(pid)
-        for label in requested_locations:
-            records = list(
-                _store_call(
-                    store.iter_fetches, provider=pid, location=label, since=from_dt, until=to_dt
-                )
-            )
-            reading_count = _store_call(
-                store.count_readings, provider=pid, location=label, since=from_dt, until=to_dt
-            )
+    for pid, label in product(requested_providers, requested_locations):
+        row = _stats_row(
+            store,
+            provider_by_id[pid],
+            config.providers.get(pid),
+            label,
+            from_dt=from_dt,
+            to_dt=to_dt,
+            window_seconds=window_seconds,
+            bucket=bucket,
+            now=now,
+        )
+        rows.append(row)
+        warnings.extend(_stats_warnings(row))
 
-            interval_seconds = provider.interval_seconds(settings)
-            due_estimated = provider.freshness != FreshnessStrategy.INTERVAL
-            due_count = int(window_seconds // interval_seconds) if interval_seconds else 0
-            stored_count = len(records)
-            ok_count = sum(
-                1 for record in records if record.status is not None and 200 <= record.status < 300
-            )
-            not_modified_count = sum(1 for record in records if record.status == 304)
-            client_error_count = sum(
-                1
-                for record in records
-                if record.status is not None and 400 <= record.status < 500 and record.status != 429
-            )
-            rate_limited_count = sum(1 for record in records if record.status == 429)
-            server_error_count = sum(
-                1 for record in records if record.status is not None and record.status >= 500
-            )
-            transport_error_count = sum(1 for record in records if record.status is None)
-            bytes_stored = sum(len(record.body) for record in records)
-            completeness = round(stored_count / due_count, 4) if due_count else None
-            ordered = sorted(record.requested_at for record in records)
-            first_fetch_at = ordered[0] if ordered else None
-            newest_fetch_at = ordered[-1] if ordered else None
-            gaps = [(ordered[i] - ordered[i - 1]).total_seconds() for i in range(1, len(ordered))]
-            mean_interval = round(sum(gaps) / len(gaps), 1) if gaps else None
-            longest_gap = int(max(gaps)) if gaps else None
-            enabled = provider.availability(settings, os.environ).enabled
-
-            rows.append(
-                {
-                    "provider": pid,
-                    "location": label,
-                    "enabled": enabled,
-                    "freshness_strategy": str(provider.freshness) if provider.freshness else None,
-                    "interval_seconds": interval_seconds,
-                    "due_count": due_count,
-                    "due_estimated": due_estimated,
-                    "stored_count": stored_count,
-                    "completeness": completeness,
-                    "ok_count": ok_count,
-                    "not_modified_count": not_modified_count,
-                    "client_error_count": client_error_count,
-                    "rate_limited_count": rate_limited_count,
-                    "server_error_count": server_error_count,
-                    "transport_error_count": transport_error_count,
-                    "reading_count": reading_count,
-                    "bytes_stored": bytes_stored,
-                    "first_fetch_at": _format_time(first_fetch_at),
-                    "newest_fetch_at": _format_time(newest_fetch_at),
-                    "newest_fetch_age_seconds": _age_seconds(now, newest_fetch_at),
-                    "mean_interval_seconds": mean_interval,
-                    "longest_gap_seconds": longest_gap,
-                    "buckets": (
-                        _build_stat_buckets(records, from_dt, to_dt, bucket, interval_seconds)
-                        if bucket
-                        else None
-                    ),
-                }
-            )
-            total_due += due_count
-            total_stored += stored_count
-            total_bytes += bytes_stored
-            if due_estimated:
-                warnings.append(
-                    _warning(
-                        "due_estimated",
-                        f"{pid} due counts are estimated.",
-                        provider=pid,
-                        location=label,
-                    )
-                )
-            if not enabled:
-                warnings.append(
-                    _warning(
-                        "provider_disabled", f"{pid} is disabled.", provider=pid, location=label
-                    )
-                )
-
+    total_due = sum(row["due_count"] for row in rows)
+    total_stored = sum(row["stored_count"] for row in rows)
+    total_bytes = sum(row["bytes_stored"] for row in rows)
     totals_completeness = round(total_stored / total_due, 4) if total_due else None
 
     return 200, {
