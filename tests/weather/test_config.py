@@ -214,7 +214,10 @@ class TestQuotaValidation:
         with pytest.raises(CliError) as exc_info:
             weather_config.load_config(cfg_path)
 
-        assert "open-meteo" in exc_info.value.message
+        error = exc_info.value
+        assert "open-meteo" in error.message
+        assert error.code == 2
+        assert error.remediation
 
     def test_quota_error_names_the_offending_provider_among_several(self, tmp_path):
         data = _base_config(

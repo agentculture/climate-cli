@@ -23,7 +23,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from climate.cli._errors import EXIT_ENV_ERROR, EXIT_USER_ERROR, CliError
+from climate.cli._errors import EXIT_ENV_ERROR, CliError
 
 # Overrides the resolved config file path. Set by tests and by anyone who
 # keeps their config somewhere other than the XDG default.
@@ -119,7 +119,7 @@ def _validate_quota(locations: dict[str, Location], providers: dict[str, Provide
         requests_per_day = location_count * ticks_per_day
         if requests_per_day > quota.calls_per_day:
             raise CliError(
-                code=EXIT_USER_ERROR,
+                code=EXIT_ENV_ERROR,
                 message=(
                     f"provider '{provider_id}' quota exceeded: "
                     f"{location_count} location(s) at a {interval}s interval "
