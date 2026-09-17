@@ -1,0 +1,1447 @@
+{
+  "slug": "weather-tracking-service",
+  "title": "weather tracking service",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-17T17:04:14Z",
+  "updated": "2026-09-17T18:01:06Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "climate-cli tracks Tel-Aviv-area weather every 5 minutes from several free providers, keeps every response in full (current state, forecast, all stats) in a local weather-mongodb docker instance, and the climate CLI controls the tracking service and queries what it collected",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "Failed fetches (timeout, 4xx/5xx, 429) are stored as fetch records too, so a gap in the data is distinguishable from a gap in collection",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "why_it_matters",
+      "text": "The collected weather data drives the user's home AC control \u2014 every parameter counts, so no provider field is discarded",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "The raw response body is persisted before any parsing or normalization runs, so a parser bug can never lose a provider field",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Every response is stored in full: all stats the provider returns (temperature, wind, precipitation, humidity, whatever is provided), and any forecast returned in the same request is kept too, even when only the 'current state' is used today",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "Forecast blocks are stored even though nothing reads them yet; the 48 h horizon is a request parameter, not a post-hoc trim of what the provider returned",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "How much forecast do we request where the provider lets us choose (open-meteo): everything for 7+ days (about 40 KB/fetch, weighted as roughly 5 API calls) or a trimmed horizon such as 48 h?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Request a 48-hour forecast horizon where the provider lets us choose (open-meteo); fixed-shape providers are stored as they come"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "decision",
+      "text": "No provider rotation: on every 5-minute tick ALL providers are sampled at once, each gated by its own refresh properties (a provider that only refreshes every 15 min is not re-fetched sooner). This supersedes issue 5's 'one global request slot per 5 minutes' scheduler wording",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "When a provider is polled on a tick but returns data identical to the last stored fetch (same body hash, or HTTP 304), do we store nothing, store a small 'seen unchanged at T' marker, or store the full body again?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Store every fetched response as-is, including unchanged ones \u2014 no dedup, no markers. Compaction (collating similars, dropping outliers, etc.) is decided later, once months to a year of data exist"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Data lands in a local 'weather-mongodb' docker MongoDB instance, following the same convention used for the other services' mongodb containers on this machine",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "Collected data survives 'stack down' and image rebuilds: it lives in the named volume and no CLI verb ever removes that volume without an explicit destructive flag",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "The climate CLI controls the tracking service (lifecycle) and provides a way to query the collected data",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "Every stack/tracker verb works from the host CLI against the containers, and exits 2 with a remediation hint when docker or the compose plugin is missing or the daemon is unreachable",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Does 'control the tracking service' mean a systemd --user unit installed by the CLI (survives reboot, sibling reachy/culture pattern), a CLI-forked daemon with a PID file, or the poller as a container next to weather-mongodb (no sibling does this)?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Containers, not systemd: tracker and web service run as containers in the weather-mongodb compose project, managed by CLI stack verbs (proposed in c29 for the user to confirm)"
+        },
+        {
+          "id": "q6",
+          "text": "What must 'query' answer first: latest reading per provider, a time range for one variable, a cross-provider comparison at a moment, stored forecasts for a target time \u2014 and is the consumer a human, the AC agent via --json, or both?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Latest reading is the primary query, for the AC agent. Agents read markdown output, code reads --json, humans read markdown or a web app. The web app should be beautiful: built with the frontend design plugin and verified with playwright"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c7",
+      "kind": "non_goal",
+      "text": "S3 archive is a later addition \u2014 not part of this delivery, but the stored shape should not preclude it",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "Location scope is the Tel-Aviv area, Israel; sources are the free providers from issue 5 (ims, openweather, open-meteo, met-no); Tomorrow.io is out",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "No coordinate is hard-coded anywhere in the package: with no location configured the tracker refuses to start (exit 2) instead of defaulting to a place",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q5",
+          "text": "Is 'Tel-Aviv area' one fixed coordinate (32.0853, 34.7818) plus the nearest IMS stations, or several configurable points, and should keyless METAR LLBG and the IMS city-forecast XML be added as extra sources beyond issue 5's four?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Locations are configuration, never committed to the repo; more than one location is allowed, bounded by each provider's request budget. Extra keyless sources (METAR LLBG, IMS city-forecast XML) are welcome"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "New noun groups register via climate/cli/__init__.py _build_parser (the 'Register your own noun groups here' hook) as modules under climate/cli/_commands/, each exposing an 'overview' verb, --json on every verb, and failures raised as CliError (exit 1 user / 2 environment)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "uv run teken cli doctor . --strict still passes with the new noun groups registered",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Every new noun/verb path gets an entry in climate/explain/catalog.py, and README's CLI table + the root explain entry (still template text: 'A clonable template for AgentCulture mesh agents') are updated to describe the weather tracker",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "Every new verb path resolves under 'climate explain', and no template boilerplate ('clonable template') remains in README, the root explain entry or the parser description",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "assumption",
+      "text": "The zero-runtime-dependency stance ends here: pyproject.toml has dependencies = [] and README advertises 'no third-party dependencies', but a MongoDB client (pymongo) is unavoidable; HTTP could stay stdlib urllib or add httpx",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "boundary",
+      "text": "CI (tests.yml) must stay green without network, docker, or API keys: tests use captured provider fixtures and a fake/mocked Mongo layer; the lint job's gates (black, isort, flake8, bandit -r climate, markdownlint, 'teken cli doctor . --strict') and the version-check job (every PR bumps the version + CHANGELOG) all apply to this work",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "The full test suite passes with network access and docker unavailable, and coverage stays at or above the configured 60%",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "climate doctor gains environment checks for the tracker (weather-mongodb reachable, provider credentials present, service running) in the existing {healthy, checks:[{id,passed,severity,message,remediation}]} shape",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "doctor's tracker checks run and report sensibly from a wheel install with no culture.yaml, and a stopped stack yields failed checks with remediation rather than an exception",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "Provider API keys (IMS ApiToken, OpenWeather key) never enter the repo or the public .eidetic memory store; .gitignore already excludes .env/.envrc",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "The env_file holding keys is gitignored and compose refuses nothing silently: a missing key disables only that provider and doctor reports it, and no key value appears in logs, fetch records or stored request URLs",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "weather-mongodb is its own dedicated instance: image mongo:8.0, container_name weather-mongodb, named volume weather-mongodb-data, restart unless-stopped, mongosh ping healthcheck, no auth \u2014 defined in a docker-compose.yml in this repo. It publishes NO host port: only the tracker and web-service containers reach it, over the compose network. (Host ports 27017 qq, 27018 data-refinery/eidetic, 27019 jlab stay untouched; 27020 is reserved for an optional, off-by-default debug publish)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "Host port 27020 is a default, not a constant: if it is taken at 'stack up' time the verb fails with a clear message and the port is configurable",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q4",
+          "text": "Should weather-mongodb bind loopback only (newest sibling convention, data-refinery) or all interfaces like jlab-mongodb and qq-mongodb \u2014 i.e. will the AC controller read the data from another machine?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "The AC controller reads locally for now, so mongo itself need not be exposed; outside access is served by a CLI-managed web service running in docker, not by opening the database"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "weather-mongodb is its own dedicated instance: image mongo:8.0, container_name weather-mongodb, host port 27020 (27017 qq, 27018 data-refinery/eidetic, 27019 jlab are taken), named volume weather-mongodb-data, restart unless-stopped, mongosh ping healthcheck, no auth \u2014 defined in a docker-compose.yml in this repo",
+          "kind": "requirement",
+          "reason": "user decision c49: queries go via the HTTP API, so mongo needs no host port"
+        }
+      ]
+    },
+    {
+      "id": "c16",
+      "kind": "assumption",
+      "text": "Only code running inside the tracker and web-service containers connects to MongoDB: pymongo, lazy-imported, through one choke-point function reading WEATHER_MONGO_URI (default the compose service, mongodb://weather-mongodb:27017/weather). The guard refuses loopback/host addresses on the sibling instances' ports 27017, 27018 and 27019; the compose-network service name is the expected target",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Connection is pymongo (lazy-imported) via a single env var (WEATHER_MONGO_URI, e.g. mongodb://127.0.0.1:27020/weather) with a guard refusing the sibling instances' ports 27017/27018/27019, mirroring jlab/mongo.py",
+          "kind": "assumption",
+          "reason": "user decision c49: only containers connect to mongo"
+        }
+      ]
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "The tracker never reads or writes qq-mongodb, eidetic-mongo/data-refinery-mongo, or jlab-mongodb, and this work does not touch those repos or containers (including the orphaned eidetic-mongo container)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "The connection guard refuses URIs pointing at host ports 27017, 27018 and 27019 and the tracker never runs docker commands against containers it did not create",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Runtime core stays dependency-free (dependencies = []): the host CLI talks to the stack with docker compose and stdlib urllib only. pymongo and the web framework live in a [project.optional-dependencies] extra that the container image installs, lazy-imported inside the service code; service code run without the extra exits 2 (environment error) with an install hint, never an ImportError traceback",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "A plain install without the extra still runs whoami, learn, explain, overview, doctor and cli overview with zero third-party imports",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Runtime core stays dependency-free (dependencies = []): pymongo (and any HTTP client) go in a [project.optional-dependencies] extra, lazy-imported inside command bodies; a tracker verb run without the extra exits 2 (environment error) with an install hint, never an ImportError traceback. This replaces the earlier assumption (c11) that the zero-dependency stance ends",
+          "kind": "requirement",
+          "reason": "user decision c49: host CLI needs no pymongo"
+        }
+      ]
+    },
+    {
+      "id": "c19",
+      "kind": "assumption",
+      "text": "The tracker runs as a host process supervised by a generated systemd --user unit whose ExecStart is the CLI's own foreground run verb; docker is used only for the data store, matching every sibling (no sibling containerises its poller)",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "assumption",
+      "text": "Secrets and connection strings come only from environment variables, one per resource (e.g. WEATHER_MONGO_URI, CLIMATE_IMS_API_TOKEN, CLIMATE_OPENWEATHER_API_KEY), validated eagerly at service start; non-secret tracker config (location, enabled providers, per-provider intervals) lives in a config file under XDG config",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "Cadence and configuration are per provider: each provider has its own configurable poll interval, enabled flag, request parameters (e.g. forecast horizon, variables, stations) and quota, with sensible defaults in its adapter. The 5-minute tick is only the scheduler's base resolution \u2014 on each tick a provider is fetched when its own interval has elapsed AND its refresh policy allows it: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. Every fetch that is made is stored as-is, even when its content is unchanged",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "With recorded met-no headers as fixtures, no request is issued before Expires and the post-expiry request carries If-Modified-Since and the identifying User-Agent; a 304 is stored as a fetch record",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Each provider declares its own refresh policy and the 5-minute tick honours it: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. A tick that finds a provider not yet due records nothing new for it rather than storing a duplicate",
+          "kind": "requirement",
+          "reason": "user resolved q1: store every fetch as-is"
+        },
+        {
+          "text": "Each provider declares its own refresh policy and the 5-minute tick honours it when deciding whether to FETCH: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. Every fetch that is made is stored as-is, even when its content is unchanged",
+          "kind": "requirement",
+          "reason": "user 2026-09-17: providers may need different cadence and configuration"
+        }
+      ]
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "Storage keeps the verbatim raw provider response per fetch (body plus fetch metadata: provider, endpoint, requested_at, HTTP status, cache headers, content hash) as the system of record, with normalized 'current' readings derived from it and re-derivable; provider/source/model and observed_at vs requested_at stay distinct per issue 5",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "Normalized readings carry provider, source, model, observed_at and requested_at, reference their raw fetch record, and IMS observed_at is corrected to true UTC from the documented always-UTC+2 quirk",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "assumption",
+      "text": "Storage is stored-as-is with no dedup for now (roughly 6.5 GB/year for met-no's fixed 62 KB shape if fetched every tick, less when its ~30 min Expires is honoured; open-meteo shrinks well below 40 KB at a 48 h horizon). Compaction strategy is deliberately deferred until months of data exist",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "Full-fidelity storage costs on the order of 4 GB/year for open-meteo and 6.5 GB/year for met-no if every 5-minute fetch stored a full body; honouring refresh policies and skipping byte-identical bodies by content hash cuts this several-fold without losing any information",
+          "kind": "assumption",
+          "reason": "user resolved q1 and q2"
+        }
+      ]
+    },
+    {
+      "id": "c24",
+      "kind": "assumption",
+      "text": "ims (the only source of real measured solar radiation, humidity and rain near Tel Aviv) is token-gated by a manual email request to `ims@ims.gov.il` with unknown turnaround, so the tracker must ship and run usefully with ims disabled and pick it up when a token appears; Tel-Aviv-area station ids and channel ids are discovered at runtime from GET /stations, not hard-coded",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "ims (the only source of real measured solar radiation, humidity and rain near Tel Aviv) is token-gated by a manual email request to ims@ims.gov.il with unknown turnaround, so the tracker must ship and run usefully with ims disabled and pick it up when a token appears; Tel-Aviv-area station ids and channel ids are discovered at runtime from GET /stations, not hard-coded",
+          "kind": "assumption",
+          "reason": "formatting only: backtick the email address for markdownlint MD034"
+        }
+      ]
+    },
+    {
+      "id": "c25",
+      "kind": "decision",
+      "text": "openweather is polled with the single free 2.5 current-weather call only; its payload lacks dew point, solar radiation and UV, and One Call 3.0 (card on file) is not used",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q7",
+          "text": "For openweather: spend two free-tier calls per tick (current + forecast), current only, or put a card on file for One Call 3.0?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "openweather: current weather only (the /data/2.5/weather call); no One Call 3.0, no card on file"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "openweather on the free 2.5 tier needs two separate calls (current + 5-day/3-hour forecast) and its current payload lacks dew point, solar radiation and UV; One Call 3.0 bundles everything but requires a payment card on file",
+          "kind": "assumption",
+          "reason": "user resolved q7"
+        }
+      ]
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "A web service, run in docker and managed by the climate CLI, serves the collected data (latest reading first) so it can be consumed from outside this machine; it includes a beautiful human-facing web app, designed with the frontend-design plugin and verified with playwright",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "The web service is read-only over the collected data and binds to loopback by default; serving it to other machines is an explicit opt-in, because it has no authentication",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "Locations are user configuration held outside the repo (never committed, including in test fixtures, docs and public eidetic memory); multiple locations are supported, bounded by each provider's request budget",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "A repository-wide search finds no location coordinates or place configuration: test fixtures are captured for a neutral public reference point unrelated to the user, and the public eidetic store holds none",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "Output contract: markdown is the default rendering for agents and humans, --json for code; 'latest reading' is the first-class query because the AC agent controls from it",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "Every query verb renders markdown by default and the same data as --json, and 'latest' reports each value's age and provider so a stale reading is never mistaken for a fresh one",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "assumption",
+      "text": "The tracker and the web service each run as their own container in the same compose project as weather-mongodb (restart: unless-stopped; secrets via a gitignored env_file), driven by CLI stack verbs modelled on data-refinery-cli's 'stack up/down/status'. This replaces the systemd --user proposal (c19)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "The web app is a graph- and chart-oriented dashboard of the data we keep, with little to no prose; charts follow the dataviz skill, the visual design follows the AgentCulture look of ../org and ../culture-nodes via the frontend-design plugin, and it is verified in a real browser with the playwright MCP",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "The dashboard stays truthful with sparse data: in its first hour, or with a provider disabled, charts show explicit empty or partial states rather than interpolated or invented lines, and observations are visually distinct from model output and from forecasts",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "Load the dataviz and frontend-design skills before writing any chart or UI code; drive the running dashboard with the playwright MCP in light and dark themes and at phone width",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "The dashboard carries the AgentCulture design system by point-in-time extraction, the way culture-nodes does: org's site-astro/src/styles/global.css tokens copied verbatim at a pinned org commit into this repo with an ADR recording the pin; ../org and ../culture-nodes are read-only sources and are never modified or imported at build or run time",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "A check script proves the extracted tokens byte-match the pinned org commit, and neither ../org nor ../culture-nodes shows any diff after this work",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "assumption",
+      "text": "Chart series colours come from the extracted AgentCulture categorical palette only if it passes the dataviz skill's colour validator in both themes; where it fails, the dataviz-validated palette wins over brand fidelity",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "audience",
+      "text": "Three readers on one machine: the AC-control agent (reads markdown, acts on the latest reading), code and scripts (read --json), and Ori as the human operator (reads markdown in the terminal and the dashboard in a browser)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "The AC-control agent can obtain the latest reading with one command and no prior knowledge beyond 'climate learn' / 'climate explain'",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "before_state",
+      "text": "climate-cli is a bare agent template with no weather capability; nothing records Tel-Aviv-area conditions, so the AC is controlled without measured humidity, radiation, wind or forecast context, and past conditions cannot be looked up",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "Nothing else on this machine already records this data \u2014 confirmed by the scope survey finding no weather collection in any sibling repo",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "after_state",
+      "text": "One CLI stack command brings up weather-mongodb, the tracker and the web service; from then on every provider is sampled on its own refresh policy every 5 minutes, every response is kept in full, 'latest reading' answers in markdown or --json, and the dashboard charts what has been collected",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "A missed tick (stack down, host off, network out) is left as an honest gap: there is no backfill and no synthetic data",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "success_signal",
+      "text": "After 24 hours of unattended running: at least 95% of due fetches per enabled provider are stored (at most 288 per always-due provider per location), a host reboot is followed by collection resuming with no manual step, and the latest-reading query returns in under 1 second with data less than 10 minutes old for interval providers",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "The 24-hour figures are measured from the stored fetch records themselves by a CLI verb, not estimated",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "success_signal",
+      "text": "Any stored document can be traced back to its verbatim provider response: 100% of normalized readings reference a raw fetch record, and re-deriving a reading from that raw record gives the same values",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "Re-derivation is exercised by a test that rebuilds normalized readings from stored raw fixtures and compares them",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "decision",
+      "text": "Dashboard stack: a Python web-service container serves a build-free static dashboard (vanilla ES modules, inline SVG charts); no Node toolchain is added to the repo",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "The collection has a first-class local backup path before any S3 work: a CLI verb dumps the database (mongodump-style archive) to a host directory outside docker's volume store, and doctor warns when the newest dump is older than a configurable age",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "A dump taken from the running stack can be restored into an empty weather-mongodb and yields the same fetch-record count and content hashes",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "The raw response is stored as the exact bytes received (plus content-type and declared charset), not as re-serialized JSON or a BSON-converted document; any parsed copy is additional. IMS XML arrives as ISO-8859-8 and JSON re-encoding would alter float text and key order",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h28",
+          "text": "The stored bytes of a fixture response hash to the same digest as the fixture file",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "Exactly one tracker fetches at a time: a lease held in weather-mongodb stops a second tracker (a host-run dev instance, a duplicated stack) from fetching, a tick that overruns is never overlapped by the next, each provider fetch has its own timeout, and tick start carries a small random jitter",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "Starting a second tracker against the same database makes it exit 2 (or idle) without issuing a single provider request",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "'latest' supports a caller-supplied maximum age: when the freshest reading for the requested provider/location is older than that, the verb exits non-zero with a distinct code and says so, so the AC agent cannot silently control from a dead tracker's last value",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "With the tracker stopped for longer than the max age, 'latest' with that option exits non-zero in both markdown and --json modes and the --json payload carries a stale flag",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "The compose project bounds its own footprint: every service sets json-file log rotation (max-size/max-file), and doctor reports database size, newest fetch age per provider and host disk headroom",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "A container that logs continuously cannot exceed its configured log cap, and doctor's size and freshness figures come from the database, not estimates",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "Coordinates sent to providers and stored are rounded to a configurable precision (default 2 decimals, about 1 km; never more than the 4 decimals MET Norway allows), and when the web service is exposed beyond loopback it identifies locations by user-chosen label only, never by coordinates",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "With exposure enabled, no API response or dashboard asset contains a latitude or longitude, and provider request URLs in fetch records carry only the rounded values",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "doctor detects version skew between the host CLI and the running tracker/web images and reports the remediation (rebuild or pull and restart)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "Running an older image against a newer CLI yields a failed doctor check naming both versions",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Issue 5's provider surface ships: a providers verb lists each provider's capabilities, auth requirement, configured quota, freshness strategy and enabled state (the issue's 'climate providers --limits'), and per-provider licence/attribution, freshness and rate-limit notes are documented",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "Every provider adapter has a row in the providers output and a documented attribution line, checked by a test that fails when an adapter lacks either",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "The dashboard carries the attribution the data licences require (Open-Meteo CC BY 4.0, MET Norway, IMS, OpenWeather) as a compact footer \u2014 the one deliberate exception to 'little to no prose'",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "Each provider whose data appears on screen is credited on that screen with a link to its licence or terms",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "assumption",
+      "text": "Dashboard JS/CSS under climate/ is analysed by SonarCloud (sonar.sources=climate, quality gate blocks on new-code coverage) with no JS test runner in the repo, so static assets are excluded from coverage (not from analysis) in sonar-project.properties, and the browser behaviour is evidenced agent-side with the playwright MCP rather than in CI",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "decision",
+      "text": "The CLI's query verbs go through the web service's HTTP API; the host CLI never connects to MongoDB",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "With the web container stopped and the tracker still running, 'latest' exits 2 naming the web service, collection continues unaffected, and no code path in the host CLI imports pymongo",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "decision",
+      "text": "'climate stack' works from a repo checkout only in this delivery; a published container image is a follow-up issue",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "IMS ApiToken turnaround is unknown (manual email grant) and Tel-Aviv-area station and channel ids cannot be listed without it; the ims adapter is built against the documented API shape and fixtures and first verified live only once a token arrives",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": true,
+      "resolution": "Token request emailed to IMS by the user on 2026-09-17; turnaround still unknown, so ims stays optional and is verified live when the token arrives",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "OpenWeather free-tier limits and update cadence, and Open-Meteo's daily quota and call-weight rule, were taken from issue 5 and third-party pages rather than fetched from the providers' own pages; they are configurable provider metadata to be re-verified when the adapters are written",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Compaction of stored-as-is data (collating similars, dropping outliers) \u2014 revisit once months to a year of data exist",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v4",
+      "text": "S3 archive of the collection",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "ecmwf-open and noaa-gfs direct-model adapters from issue 5",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "The AC-control agent's actual input contract (which variables, units, max acceptable age, indoor vs outdoor coupling) is unknown because that agent does not exist yet; 'latest' is designed provider-complete so it can adapt, but the first real consumer may reshape the query surface",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v7",
+      "text": "Provider terms of use were read only in summary; storing and re-serving third-party weather data beyond personal use (exposed web service) may carry licence conditions beyond attribution \u2014 re-check before exposing the service outside the LAN",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v8",
+      "text": "Residual surprise risk after a rigorous pass: provider API deprecations (OpenWeather 2.5 lineage), silent provider-side schema changes that normalization mis-reads while raw storage stays correct, and host-level events (docker upgrades, disk failure) between backups. The pass raises discovery odds; it does not establish that no unknown unknowns remain",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v9",
+      "text": "Publish a multi-arch (arm64 + amd64) tracker/web image to ghcr so the stack runs from a PyPI install",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": true,
+      "resolution": "Tracked as https://github.com/agentculture/climate-cli/issues/6",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "issue 5 (agentculture/climate-cli) body + owner comment",
+      "finding": "Issue specifies a GLOBAL budget of one outbound request per 5 minutes rotated across providers; the user overrode this in-session (all providers every tick, each per its own refresh properties). Issue also fixes provider ids ims/openweather/open-meteo/met-no, keeps provider/source/model distinct, requires observed_at vs requested_at, fixture-only tests, and drops Tomorrow.io",
+      "seeds": [
+        "c4",
+        "c8"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "climate/cli/__init__.py + climate/cli/_commands/cli.py",
+      "finding": "CLI is argparse noun/verb; _build_parser has an explicit registration hook for new noun groups; cli.py documents that any noun with action-verbs must expose 'overview' (rubric check overview_cli_noun_exists); _dispatch wraps all non-CliError exceptions so no traceback leaks",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "climate/explain/catalog.py + README.md",
+      "finding": "explain catalog is keyed by command-path tuples with verbatim markdown per verb; root entry and README still carry template boilerplate, and the parser description in climate/cli/__init__.py says 'a clonable template'",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "pyproject.toml",
+      "finding": "dependencies = [] today, requires-python >=3.12, version 0.4.0, console script 'climate'; dev group has pytest/xdist/cov, bandit, flake8, isort, black, teken; coverage fail_under = 60",
+      "seeds": [
+        "c11"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": ".github/workflows/tests.yml",
+      "finding": "test job runs 'uv run pytest -n auto --cov=climate' on ubuntu-latest with no services block (no Mongo available); lint job runs bandit over climate/ (urllib/subprocess use will be scanned; B404/B603 already skipped) and the afi rubric gate; version-check fails any PR whose pyproject version equals main",
+      "seeds": [
+        "c12"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "climate/cli/_commands/doctor.py",
+      "finding": "doctor reports a rubric-shaped checks list and currently only verifies identity invariants (prompt file, backend, skills); it short-circuits to a single info check when no culture.yaml is found (wheel install), so tracker checks must not depend on culture.yaml being present",
+      "seeds": [
+        "c13"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": ".gitignore + CLAUDE.md memory convention",
+      "finding": ".env and .envrc are gitignored; CLAUDE.md states eidetic memory in this repo is committed and public by default, so secrets and token values must never be /remember-ed",
+      "seeds": [
+        "c14"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "sibling mongo containers: data-refinery-cli/docker-compose.yml:56-71, jetson-ai-lab-cli/README.md:93-96 + jlab/mongo.py, autonomous-intelligence/qq/docker-compose.yml:4-19, docker inspect, ss -ltn",
+      "finding": "No written cross-repo convention or port registry exists; de-facto convention is one mongo:8.0 container per product on its own host port (27017 qq, 27018 data-refinery, 27019 jlab; 27020 verified free via ss -ltn), no auth, pymongo, env-var URI. Newest precedent (data-refinery) uses compose + named volume + unless-stopped + mongosh ping healthcheck + loopback-only bind with DR_BIND opt-out; jlab is a bare docker run bound 0.0.0.0 with no restart policy; jlab/mongo.py refuses ports 27017/27018 to avoid borrowing a sibling's instance. data-refinery-cli exposes 'stack up/down/status/overview' verbs wrapping docker compose. Running eidetic-mongo is an orphan of a compose file deleted from eidetic-cli",
+      "seeds": [
+        "c15",
+        "c16",
+        "c17"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "sibling pyproject.toml files: data-refinery-cli:16-23, discord-bot-cli:16-24, ec2-cli, reterminal-cli, jetson-ai-lab-cli:16",
+      "finding": "House norm in teken-scaffolded siblings is dependencies = [] plus optional extras lazy-imported with exit-2 install hints (data-refinery-cli 'store' extra carries pymongo>=4; discord-bot-cli 'discord' extra states the contract verbatim); jetson-ai-lab-cli is the lone in-family exception with pymongo directly in dependencies",
+      "seeds": [
+        "c18"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "culture/culture_core/cli/server.py:577-652 + culture_core/persistence.py + pidfile.py; reachy-mini-cli/reachy/service/units.py + manager.py; sibling compose files",
+      "finding": "Two host-process service patterns exist in siblings (culture: fork+PID file plus generated systemd --user unit; reachy-mini-cli: systemd --user only) and every sibling compose file is data-plane only, so containerising the poller is new to this workspace. It was chosen anyway once the user asked for a dockerised, CLI-managed web service: one compose project gives a single lifecycle, reboot survival via restart policy, and env_file secrets without the systemd EnvironmentFile wrinkle. Costs: a Dockerfile/image build for this arm64 host, rebuild on code change, and CI cannot exercise the containers",
+      "seeds": [
+        "c19"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "jetson-ai-lab-cli/jlab/mongo.py:51,167-180; reachy-mini-cli/reachy/demo_config.py:27-54; culture/culture_core/cli/shared/mesh.py:43",
+      "finding": "No sibling loads .env files; secrets are env vars (jlab: single required JLAB_MONGO_URI, no config fallback) or OS keyring (culture link passwords); non-secret daemon config is a file the unit can run from alone (reachy: JSON under XDG_CONFIG_HOME because stdlib tomllib cannot write; culture: YAML under ~/.culture). A systemd --user unit does not inherit the login shell's exports, so env-var secrets need an EnvironmentFile or equivalent",
+      "seeds": [
+        "c20"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "live responses saved in scratchpad: om.json (39,838 B), met.json (61,934 B) + headers_met.txt; aviationweather.gov METAR LLBG",
+      "finding": "Open-Meteo: keyless, one call returns current+minutely_15+hourly+daily; current.interval = 900 s and carries dew point, apparent temperature, shortwave/direct/diffuse radiation, UV, cloud cover, both pressures; no cache headers returned; minutely_15 is interpolated from hourly outside Europe/North America per its docs. MET Norway complete: keyless with mandatory User-Agent, 89-entry timeseries whose first entry is the current UTC hour, Expires about 30 min after request, Last-Modified tracks the model run, no shortwave radiation field. METAR LLBG is a keyless genuine observation roughly hourly; LLSD returns nothing (airport closed)",
+      "seeds": [
+        "c21"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "measured payload sizes (om.json 39,838 B, met.json 61,934 B) x 288/day x 365",
+      "finding": "Naive every-tick full-body storage is about 4.2 GB/yr (open-meteo, 7-day everything request) plus 6.5 GB/yr (met-no, fixed shape) on a local docker volume; met-no content is unchanged within its ~30 min Expires window, so most of that would be duplicate blobs",
+      "seeds": [
+        "c22",
+        "c23"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "IMS API PDF (ims.gov.il/sites/default/files/2023-01/API_Explanation_en.pdf, saved as scratchpad/ims_api.pdf) + keyless isr_cities.xml",
+      "finding": "Envista API needs 'Authorization: ApiToken', granted manually by email with no stated SLA; channels include TD, RH, WS/WD/gusts, Rain, BP and measured radiation Grad/DiffR/NIP; channel ids differ per station so station metadata must be read first; PDF states observation time is always UTC+2 despite a +03:00 label; no numeric cadence or rate limit is documented; station ids for Tel Aviv Coast / Bet Dagan could not be obtained without a token. Keyless isr_cities.xml (30,922 B, ISO-8859-8) is a daily city FORECAST including 'Tel Aviv - Yafo', not observations",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "OpenWeather docs via search (openweathermap.org/api/one-call-3, /price) \u2014 not fetched live, no key used",
+      "finding": "Free 2.5 current and forecast are separate endpoints; One Call 3.0 gives 1,000 free calls/day but only with a card on file; the 60/min and 1M/month limits and the ~10 min update cadence come from issue 5 and third-party pages, not re-verified on an OpenWeather page this session; response size unmeasured",
+      "seeds": [
+        "c25"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "culture-nodes/docs/adr/0001-culture-design-source.md + web/src/culture-design/README.md + org/site-astro/src/styles/global.css",
+      "finding": "org's global.css ('First light over the mesh') is the canonical AgentCulture token contract: light/dark colour tokens verified at WCAG AA, mesh palette, Fraunces/Albert Sans type roles, motion easings and a reduced-motion kill switch. culture-nodes ADR 0001 extracts it verbatim at pinned org commit b4d939b into web/src/culture-design/ (tokens.css, mark.tsx, a 7-colour categorical palette.ts, edges.ts), never imports from the org checkout, and guards fidelity with scripts/check-culture-design.mjs. culture-nodes web is Vite + React 18 + TypeScript with @playwright/test e2e; org is Astro 7",
+      "seeds": [
+        "c30",
+        "c31"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / recovery + data-loss lens: docker system df on this host, spec c5/h4/c7",
+      "finding": "Spec protects the volume from the CLI's own verbs (h4) but the only copy of a year of irreplaceable observations is one named docker volume on a dev box holding 96 volumes (13 active, ~130 GB reclaimable) where pruning is likely; 'docker volume prune -a' or a manual 'volume rm' while the stack is down destroys it, and S3 is deferred. Disk capacity is not a constraint (2.2 TB free, ~10 GB/yr projected)",
+      "seeds": [
+        "c39"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / unstated-assumptions lens: scratchpad isr_cities.xml (ISO-8859-8), om.json, spec c3/c22/h2",
+      "finding": "'Verbatim' was never defined: inserting parsed JSON into MongoDB changes number representation and key order and cannot hold XML; the saved IMS feed is ISO-8859-8, so byte-exact storage with charset metadata is the only reading that keeps the stored-as-is decision (q1) honest",
+      "seeds": [
+        "c40"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / concurrency lens: spec c4/c21/c29, issue 5 scheduler point 7 (jitter), MET Norway ToS",
+      "finding": "Nothing in the spec prevents two trackers running at once (container plus a developer's host run), which would double request counts, breach met-no's Expires rule and duplicate records; overlapping ticks and per-fetch timeouts were unspecified; issue 5 asks for jitter where providers discourage synchronized calls and the spec had dropped it",
+      "seeds": [
+        "c41"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / failure-modes lens: spec c28/h19/c33, README exit-code policy (3+ reserved)",
+      "finding": "h19 makes staleness visible in the output, but an agent or script controlling hardware needs it machine-checkable: a stopped tracker still returns a well-formed 'latest'. Exit codes 3+ are reserved in README, so a dedicated stale code is available",
+      "seeds": [
+        "c42"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / operations + observability lens: docker info (LoggingDriver=json-file), /etc/docker/daemon.json absent",
+      "finding": "The host's docker daemon has no log limits configured, so a tracker logging every 5 minutes for a year, or a crash-looping container, grows its log without bound; the spec had no observability beyond doctor's reachability checks",
+      "seeds": [
+        "c43"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / security + privacy lens: spec c26/h17/c27/h18, MET Norway ToS 4-decimal rule",
+      "finding": "c27 keeps the location out of the repo, but the spec did not notice that the location then leaves the machine three other ways: exact coordinates go to four third parties every 5 minutes, sit in every stored document and dump, and would be served to the network once the web service is exposed. Weather does not vary at address precision, so rounding costs nothing",
+      "seeds": [
+        "c44"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / adjacent-systems lens: spec c15/c16/c18/c26/c29",
+      "finding": "Once tracker and web service moved into containers (c29), the reason for publishing mongo on host port 27020 and for a host-side pymongo extra is only the CLI's query verbs; routing them through the web API would remove both, shrinking the attack surface (no unauthenticated mongo port) at the cost of coupling the AC agent's read path to the web container. Recorded as question q2 for the user",
+      "seeds": []
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / lifecycle + packaging lens: pyproject.toml hatch wheel target, data-refinery-cli stack.py:46-75, .github/workflows/publish.yml",
+      "finding": "The wheel ships only the python package; data-refinery's stack verbs locate docker-compose.yml by walking up from the module and return None from a wheel install. The spec says one CLI command brings the stack up but never said from which install. publish.yml publishes to PyPI/TestPyPI only and builds no image (TestPyPI publishing is already known to 422 for config reasons). Recorded as question q3",
+      "seeds": []
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / lifecycle lens (upgrade path): spec c29, version-bump-every-PR rule in tests.yml",
+      "finding": "Every PR bumps the version, so host CLI and long-running containers drift apart routinely; nothing in the spec noticed or reported a stale image still collecting with old adapter code",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / counter-evidence lens: issue 5 acceptance criteria vs exported spec",
+      "finding": "Checked the spec against issue 5's 16 acceptance criteria: provider capability/quota metadata, 'providers --limits', and licence/attribution documentation had no claim; Open-Meteo's free tier is CC BY 4.0 and non-commercial and MET Norway requires credit, which collides with the no-prose dashboard requirement (c30). The issue's 'current' and 'compare' verbs are covered by the latest query (c28); ecmwf/gfs are parked (v5)",
+      "seeds": [
+        "c46",
+        "c47"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / operations lens (CI): sonar-project.properties, tests.yml lint job, decision c38",
+      "finding": "sonar.qualitygate.wait=true with sources=climate means a build-free JS dashboard lands as uncovered new code and can turn the gate red; bandit will also flag a 0.0.0.0 bind (B104) and urllib use (B310) in the web service and adapters. No CI job can run the containers or a browser",
+      "seeds": [
+        "c48"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / reversibility + rollback lens: spec c5/h4/o6/c17",
+      "finding": "Clean: the feature is additive (new noun groups, new compose project, new port); removing it is 'stack down' plus deleting one named volume, no sibling instance or repo is written, and agent-first verbs are untouched. Residual: reversibility of the DATA is the backup finding (c39), not this lens",
+      "seeds": []
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / time lens: spec h16/o12/c36, IMS PDF timestamp note, Israel DST",
+      "finding": "Examined timestamp handling: IMS fixed-UTC+2 correction is obliged (o12) and met-no/open-meteo/METAR are UTC or carry offsets. Not previously stated and left to the plan: all stored times are UTC, the container clock is the host clock, and the dashboard alone converts to local time across DST changes",
+      "seeds": []
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / migration lens: spec c22/c37",
+      "finding": "Clean by construction: raw fetch records are the system of record and normalized readings are re-derivable (c37), so a normalized-schema change is a re-derive, not a data migration. Holds only if the raw-record shape itself is versioned \u2014 left to the plan as a schema_version field",
+      "seeds": []
+    },
+    {
+      "id": "s31",
+      "surface": "challenge pass / UNEXAMINED surfaces",
+      "finding": "Not examined, and why: (1) the AC-control agent itself \u2014 it does not exist in any surveyed repo, so which variables, units and freshness it needs is unverified; (2) live IMS and OpenWeather responses \u2014 no token/key, so payload shape, size and rate behaviour rest on documentation; (3) provider terms-of-use full texts (IMS terms link, OpenWeather licence) were not read; (4) long-run behaviour of MongoDB 8 on this host under a year of append-only writes; (5) the frontend-design and dataviz skills' concrete guidance was not loaded during speccing",
+      "seeds": []
+    }
+  ],
+  "lapses": [],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c2",
+      "seam": "provider adapter -> fetch store",
+      "behavior": "The verbatim response body and fetch metadata are written to MongoDB before any parsing; a normalization failure leaves the raw record intact and is recorded against it",
+      "source_text": "The collected weather data drives the user's home AC control \u2014 every parameter counts, so no provider field is discarded",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c1",
+      "seam": "provider adapter -> fetch store (failure path)",
+      "behavior": "Timeouts, non-2xx statuses, 429 and 304 each produce a stored fetch record with status and error detail; one provider failing never prevents the other providers' fetches in the same tick",
+      "source_text": "climate-cli tracks Tel-Aviv-area weather every 5 minutes from several free providers, keeps every response in full (current state, forecast, all stats) in a local weather-mongodb docker instance, and the climate CLI controls the tracking service and queries what it collected",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c21",
+      "seam": "scheduler tick -> provider adapter",
+      "behavior": "On each 5-minute tick every enabled provider is asked whether it is due per its own refresh policy; met-no is never requested before its stored Expires and sends If-Modified-Since plus the identifying User-Agent",
+      "source_text": "Each provider declares its own refresh policy and the 5-minute tick honours it when deciding whether to FETCH: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. Every fetch that is made is stored as-is, even when its content is unchanged",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c14",
+      "seam": "provider adapter -> logs and stored documents",
+      "behavior": "API keys and tokens are redacted from stored request URLs, headers, log lines and error messages (openweather carries its key in the query string)",
+      "source_text": "Provider API keys (IMS ApiToken, OpenWeather key) never enter the repo or the public .eidetic memory store; .gitignore already excludes .env/.envrc",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c27",
+      "seam": "configuration -> tracker",
+      "behavior": "Locations are read only from user configuration outside the repo; with none configured the tracker exits 2 with a remediation hint; each location multiplies per-provider request count and is refused if it would exceed a provider's configured budget",
+      "source_text": "Locations are user configuration held outside the repo (never committed, including in test fixtures, docs and public eidetic memory); multiple locations are supported, bounded by each provider's request budget",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c5",
+      "seam": "CLI stack verbs -> docker compose",
+      "behavior": "up/down/status act only on this compose project; down never removes the weather-mongodb-data volume; a missing docker or compose plugin exits 2 with an install hint",
+      "source_text": "Data lands in a local 'weather-mongodb' docker MongoDB instance, following the same convention used for the other services' mongodb containers on this machine",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c17",
+      "seam": "mongo connection choke-point",
+      "behavior": "Every MongoDB access goes through one function that reads the URI from the environment and refuses host ports 27017, 27018 and 27019",
+      "source_text": "The tracker never reads or writes qq-mongodb, eidetic-mongo/data-refinery-mongo, or jlab-mongodb, and this work does not touch those repos or containers (including the orphaned eidetic-mongo container)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c18",
+      "seam": "CLI verb -> optional extra",
+      "behavior": "A tracker, query or stack verb invoked without the extra installed exits 2 with the exact install command and no ImportError traceback; the agent-first verbs import no third-party module",
+      "source_text": "Runtime core stays dependency-free (dependencies = []): pymongo (and any HTTP client) go in a [project.optional-dependencies] extra, lazy-imported inside command bodies; a tracker verb run without the extra exits 2 (environment error) with an install hint, never an ImportError traceback. This replaces the earlier assumption (c11) that the zero-dependency stance ends",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c28",
+      "seam": "query verb -> caller",
+      "behavior": "'latest' returns, per provider and location, every normalized value with its unit, observed_at, age and provenance (provider/source/model), in markdown by default and identically structured under --json; with no data it says so and exits 0",
+      "source_text": "Output contract: markdown is the default rendering for agents and humans, --json for code; 'latest reading' is the first-class query because the AC agent controls from it",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c26",
+      "seam": "web service -> network",
+      "behavior": "The web service opens MongoDB read-only in effect (no write routes), publishes on loopback by default, and exposes other interfaces only through an explicit configuration value",
+      "source_text": "A web service, run in docker and managed by the climate CLI, serves the collected data (latest reading first) so it can be consumed from outside this machine; it includes a beautiful human-facing web app, designed with the frontend-design plugin and verified with playwright",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c30",
+      "seam": "web service API -> dashboard",
+      "behavior": "Series are served with explicit gaps (nulls for missed ticks) and a kind tag of observation, model or forecast; the dashboard renders gaps as gaps and never interpolates across them",
+      "source_text": "The web app is a graph- and chart-oriented dashboard of the data we keep, with little to no prose; charts follow the dataviz skill, the visual design follows the AgentCulture look of ../org and ../culture-nodes via the frontend-design plugin, and it is verified in a real browser with the playwright MCP",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c22",
+      "seam": "normalizer -> readings collection",
+      "behavior": "Each normalized reading stores a reference to its raw fetch record; IMS timestamps are converted from fixed UTC+2 to UTC regardless of the +03:00 label; units are normalized to SI-style metric with the original unit retained",
+      "source_text": "Storage keeps the verbatim raw provider response per fetch (body plus fetch metadata: provider, endpoint, requested_at, HTTP status, cache headers, content hash) as the system of record, with normalized 'current' readings derived from it and re-derivable; provider/source/model and observed_at vs requested_at stay distinct per issue 5",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c31",
+      "seam": "design tokens -> dashboard",
+      "behavior": "tokens.css is a verbatim copy of org's global.css at the pinned commit recorded in an ADR, verified by a check script in CI; nothing under ../org or ../culture-nodes is written",
+      "source_text": "The dashboard carries the AgentCulture design system by point-in-time extraction, the way culture-nodes does: org's site-astro/src/styles/global.css tokens copied verbatim at a pinned org commit into this repo with an ADR recording the pin; ../org and ../culture-nodes are read-only sources and are never modified or imported at build or run time",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c12",
+      "seam": "test suite -> external world",
+      "behavior": "No test opens a network socket to a provider or to MongoDB; provider behaviour comes from captured fixtures for a neutral location and storage from an in-memory fake",
+      "source_text": "CI (tests.yml) must stay green without network, docker, or API keys: tests use captured provider fixtures and a fake/mocked Mongo layer; the lint job's gates (black, isort, flake8, bandit -r climate, markdownlint, 'teken cli doctor . --strict') and the version-check job (every PR bumps the version + CHANGELOG) all apply to this work",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c18",
+      "seam": "host CLI -> stack (replaces o8)",
+      "behavior": "Host-side verbs (agent-first verbs, stack, query, providers, doctor) import only the standard library; service code inside the image, run without the extra, exits 2 with the exact install command and no ImportError traceback",
+      "source_text": "Runtime core stays dependency-free (dependencies = []): the host CLI talks to the stack with docker compose and stdlib urllib only. pymongo and the web framework live in a [project.optional-dependencies] extra that the container image installs, lazy-imported inside the service code; service code run without the extra exits 2 (environment error) with an install hint, never an ImportError traceback",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c49",
+      "seam": "query verb -> web service HTTP API",
+      "behavior": "Query verbs call the web service over HTTP with stdlib urllib and a timeout; when the web service is unreachable they exit 2 with a remediation hint ('climate stack status'), distinct from the stale-data exit code; CLI and dashboard read the same API routes",
+      "source_text": "The CLI's query verbs go through the web service's HTTP API; the host CLI never connects to MongoDB",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c21",
+      "seam": "provider configuration -> scheduler",
+      "behavior": "Each provider's interval, enabled flag, request parameters and quota are read from user configuration with adapter defaults; an interval shorter than the provider's refresh policy or exceeding its quota across configured locations is rejected at startup with exit 2; changing one provider's configuration never affects another's schedule",
+      "source_text": "Cadence and configuration are per provider: each provider has its own configurable poll interval, enabled flag, request parameters (e.g. forecast horizon, variables, stations) and quota, with sensible defaults in its adapter. The 5-minute tick is only the scheduler's base resolution \u2014 on each tick a provider is fetched when its own interval has elapsed AND its refresh policy allows it: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. Every fetch that is made is stored as-is, even when its content is unchanged",
+      "origin": "llm",
+      "status": "approved"
+    }
+  ]
+}
