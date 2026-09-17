@@ -419,6 +419,17 @@ class TestMalformedConfigShape:
 
         assert exc_info.value.code == 2
 
+    def test_boolean_interval_raises_cli_error(self, tmp_path):
+        # True/False are `int` in Python; they must never pass as a config number.
+        data = _base_config()
+        data["providers"]["open-meteo"]["interval_seconds"] = True
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
     def test_non_numeric_quota_raises_cli_error(self, tmp_path):
         data = _base_config()
         data["providers"]["open-meteo"]["quota"]["calls_per_day"] = "lots"
@@ -429,9 +440,28 @@ class TestMalformedConfigShape:
 
         assert exc_info.value.code == 2
 
-    def test_non_positive_precision_raises_cli_error(self, tmp_path):
-        non_positive_precision = 2 - 2
-        data = _base_config(coordinate_precision=non_positive_precision)
+    def test_boolean_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = False
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_negative_precision_raises_cli_error(self, tmp_path):
+        negative_precision = 0 - 1
+        data = _base_config(coordinate_precision=negative_precision)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_precision_raises_cli_error(self, tmp_path):
+        data = _base_config(coordinate_precision=True)
         cfg_path = _write_config(tmp_path / "weather.json", data)
 
         with pytest.raises(CliError) as exc_info:
@@ -447,6 +477,19 @@ class TestMalformedConfigShape:
             weather_config.load_config(cfg_path)
 
         assert exc_info.value.code == 2
+
+    def test_zero_precision_is_valid_and_rounds_to_whole_degrees(self, tmp_path):
+        # Whole-degree rounding is a legitimate — the most private — setting;
+        # 0 must load, not raise, and round_coordinate must clamp to it.
+        data = _base_config(coordinate_precision=0)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert config.coordinate_precision == 0
+        assert location.latitude == round(GREENWICH_LAT, 0)
+        assert location.longitude == round(GREENWICH_LON, 0)
 
     def test_missing_latitude_raises_cli_error_naming_location(self, tmp_path):
         data = _base_config(locations={"greenwich": {"longitude": GREENWICH_LON}})

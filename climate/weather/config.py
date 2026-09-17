@@ -172,24 +172,51 @@ def _require_mapping(value: object, path_hint: str) -> dict:
     return value
 
 
-def _positive_int(value: object, path_hint: str) -> int:
-    """Require ``value`` to convert to a positive integer, never a bare traceback."""
+def _whole_number(value: object, path_hint: str) -> int:
+    """Coerce to a whole number, never a bare traceback.
+
+    Rejects booleans (``True``/``False`` are ``int`` in Python but never a
+    valid config number), non-numeric types, and floats/strings with a
+    fractional part (``2.5`` is not a whole number).
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         raise _config_error(
-            message=f"weather config '{path_hint}' must be a positive whole number",
-            remediation=f"set '{path_hint}' to a positive whole number",
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
         )
     try:
-        number = int(value)
+        number = float(value)
     except (TypeError, ValueError):
         raise _config_error(
-            message=f"weather config '{path_hint}' must be a positive whole number",
-            remediation=f"set '{path_hint}' to a positive whole number",
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
         ) from None
+    if not number.is_integer():
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
+        )
+    return int(number)
+
+
+def _positive_int(value: object, path_hint: str) -> int:
+    """Require ``value`` to convert to a strictly positive whole number."""
+    number = _whole_number(value, path_hint)
     if number <= 0:
         raise _config_error(
             message=f"weather config '{path_hint}' must be a positive whole number",
             remediation=f"set '{path_hint}' to a positive whole number",
+        )
+    return number
+
+
+def _non_negative_int(value: object, path_hint: str) -> int:
+    """Require ``value`` to convert to zero or a positive whole number."""
+    number = _whole_number(value, path_hint)
+    if number < 0:
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a non-negative whole number",
+            remediation=f"set '{path_hint}' to zero or a positive whole number",
         )
     return number
 
@@ -304,7 +331,7 @@ def load_config(path: str | Path | None = None) -> WeatherConfig:
     raw = _read_raw_config(resolved)
 
     precision_raw = raw.get("coordinate_precision", DEFAULT_COORDINATE_PRECISION)
-    precision = _positive_int(precision_raw, "coordinate_precision")
+    precision = _non_negative_int(precision_raw, "coordinate_precision")
 
     locations_raw = _require_mapping(raw.get("locations") or {}, "locations")
     providers_raw = _require_mapping(raw.get("providers") or {}, "providers")
