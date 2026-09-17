@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from climate.weather import vocabulary
+from climate.weather import tracker, vocabulary
 from climate.weather.config import Location, WeatherConfig
 from climate.weather.providers.base import (
     Attribution,
@@ -26,7 +26,7 @@ from climate.weather.providers.base import (
 )
 from climate.weather.store import FetchRecord, InMemoryWeatherStore, Measurement, Reading
 from climate.weather.web import api
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
 
 NOW = datetime(2026, 9, 17, 8, 35, 0, tzinfo=UTC)
 OTHER_LABEL = "office"
@@ -236,6 +236,147 @@ def test_providers_unknown_id_is_400(store, config, providers) -> None:
     status, body = api.list_providers(store, config, providers, {"provider": ["nope"]}, NOW)
     assert status == 400
     assert body["error"]["code"] == "unknown_provider"
+
+
+# --- availability comes from the tracker, not from this process ---------------
+#
+# Regression: the web container is not given the provider credentials (only
+# the tracker service has the ``env_file``), so evaluating availability here
+# reported a provider that was collecting perfectly well as "disabled, no
+# credential" — on this route, in /health and on the dashboard built from them.
+
+
+def _tracker_says(store, provider_id: str, *, enabled: bool, credential_present, at=NOW) -> None:
+    """Write a heartbeat whose availability snapshot covers one provider."""
+    store.save_heartbeat(
+        "9.9.9",
+        at,
+        {
+            provider_id: {
+                "enabled": enabled,
+                "reason": None if enabled else "disabled in configuration",
+                "credential_present": credential_present,
+            }
+        },
+    )
+
+
+def test_providers_prefers_the_trackers_snapshot_over_this_process_environment(
+    store, config, providers, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLIMATE_TEST_OBS_TOKEN", raising=False)  # as in the web container
+    _tracker_says(store, "test-obs", enabled=True, credential_present=True)
+
+    status, body = api.list_providers(store, config, providers, {}, NOW)
+
+    assert status == 200
+    row = next(r for r in body["providers"] if r["provider"] == "test-obs")
+    assert row["enabled"] is True
+    assert row["credential_present"] is True
+    assert row["enabled_reason"] is None
+    assert row["availability_source"] == "tracker"
+
+
+def test_health_prefers_the_trackers_snapshot_and_raises_no_disabled_warning(
+    store, config, providers, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLIMATE_TEST_OBS_TOKEN", raising=False)
+    _tracker_says(store, "test-obs", enabled=True, credential_present=True)
+
+    status, body = api.health(store, config, providers, {}, NOW)
+
+    assert status == 200
+    row = next(r for r in body["providers"] if r["provider"] == "test-obs")
+    assert row["enabled"] is True
+    assert row["availability_source"] == "tracker"
+    assert not [w for w in body["warnings"] if w["code"] == "provider_disabled"]
+
+
+def test_providers_falls_back_to_this_process_and_says_so(
+    store, config, providers, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLIMATE_TEST_OBS_TOKEN", raising=False)  # and no heartbeat at all
+
+    status, body = api.list_providers(store, config, providers, {}, NOW)
+
+    assert status == 200
+    row = next(r for r in body["providers"] if r["provider"] == "test-obs")
+    assert row["enabled"] is False
+    assert row["credential_present"] is False
+    assert row["availability_source"] == "web"
+    assert body["warnings"] == []
+
+
+def test_a_provider_missing_from_the_snapshot_falls_back_on_its_own(
+    store, config, providers
+) -> None:
+    _tracker_says(store, "test-obs", enabled=True, credential_present=True)
+
+    status, body = api.list_providers(store, config, providers, {}, NOW)
+
+    rows = {row["provider"]: row for row in body["providers"]}
+    assert rows["test-obs"]["availability_source"] == "tracker"
+    assert rows["test-model"]["availability_source"] == "web"
+
+
+def test_an_old_heartbeat_is_still_used_but_its_age_is_reported(
+    store, config, providers, monkeypatch
+) -> None:
+    monkeypatch.delenv("CLIMATE_TEST_OBS_TOKEN", raising=False)
+    age = api.HEARTBEAT_STALE_SECONDS + 60
+    _tracker_says(
+        store,
+        "test-obs",
+        enabled=True,
+        credential_present=True,
+        at=NOW - timedelta(seconds=age),
+    )
+
+    status, body = api.list_providers(store, config, providers, {}, NOW)
+
+    row = next(r for r in body["providers"] if r["provider"] == "test-obs")
+    assert row["enabled"] is True  # unknown-but-reported, not discarded
+    assert row["availability_source"] == "tracker"
+    warning = next(w for w in body["warnings"] if w["code"] == "store_degraded")
+    assert str(age) in warning["message"]
+
+
+def test_a_disabled_provider_in_the_snapshot_is_reported_disabled(
+    store, config, providers, monkeypatch
+) -> None:
+    monkeypatch.setenv("CLIMATE_TEST_OBS_TOKEN", fake_secret("obs-token"))  # this process has one
+    _tracker_says(store, "test-obs", enabled=False, credential_present=False)
+
+    status, body = api.list_providers(store, config, providers, {}, NOW)
+
+    row = next(r for r in body["providers"] if r["provider"] == "test-obs")
+    assert row["enabled"] is False
+    assert row["credential_present"] is False
+    assert row["availability_source"] == "tracker"
+
+
+def test_no_route_ever_echoes_the_credential_value(store, config, providers, monkeypatch) -> None:
+    secret = fake_secret("obs-token")
+    monkeypatch.setenv("CLIMATE_TEST_OBS_TOKEN", secret)
+    snapshot = tracker.availability_snapshot(providers, config, {"CLIMATE_TEST_OBS_TOKEN": secret})
+    store.save_heartbeat("9.9.9", NOW, snapshot)
+
+    stored = store.latest_heartbeat()
+    assert stored["providers"]["test-obs"]["credential_present"] is True
+    assert secret not in json.dumps(stored, default=str)
+
+    for handler, params in (
+        (api.health, {}),
+        (api.list_providers, {}),
+        (api.list_locations, {}),
+        (api.latest, {}),
+        (api.series, {"variable": ["temperature"]}),
+        (api.forecast, {}),
+        (api.stats, {}),
+    ):
+        status, body = handler(store, config, providers, params, NOW)
+        assert status == 200
+        assert secret not in json.dumps(body, default=str)
 
 
 # --- /locations ----------------------------------------------------------------

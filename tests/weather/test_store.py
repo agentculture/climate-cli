@@ -20,8 +20,10 @@ from climate.weather.store import (
     StoreError,
     UnknownFetchError,
     WeatherStore,
+    heartbeat_provider_snapshot,
     redact_url,
 )
+from tests.weather.neutral import fake_secret
 from tests.weather.store_contract import (
     JSON_BODY,
     XML_BODY,
@@ -364,6 +366,43 @@ def test_save_readings_with_no_readings_is_a_no_op() -> None:
     fetch_id = store.save_fetch(make_fetch())
     assert store.save_readings(fetch_id, []) == []
     assert store.count_readings() == 0
+
+
+def test_heartbeat_keeps_the_two_argument_call_shape() -> None:
+    """The snapshot is optional: an existing caller reads back ``None``."""
+    store = InMemoryWeatherStore()
+    store.save_heartbeat("9.9.9", T0)
+    heartbeat = store.latest_heartbeat()
+    assert heartbeat["version"] == "9.9.9"
+    assert heartbeat["providers"] is None
+
+
+def test_heartbeat_stores_the_provider_availability_snapshot() -> None:
+    store = InMemoryWeatherStore()
+    store.save_heartbeat(
+        "9.9.9",
+        T0,
+        {"open-meteo": {"enabled": True, "reason": None, "credential_present": None}},
+    )
+    assert store.latest_heartbeat()["providers"] == {
+        "open-meteo": {"enabled": True, "reason": None, "credential_present": None}
+    }
+
+
+def test_the_snapshot_keeps_only_the_documented_fields() -> None:
+    """A credential cannot be smuggled into a heartbeat by an extra key."""
+    secret = fake_secret("provider-key")
+    snapshot = heartbeat_provider_snapshot(
+        {"openweather": {"enabled": 1, "reason": "", "credential_present": secret, "key": secret}}
+    )
+    assert snapshot == {
+        "openweather": {"enabled": True, "reason": None, "credential_present": True}
+    }
+    assert secret not in str(snapshot)
+
+
+def test_the_snapshot_of_nothing_is_nothing() -> None:
+    assert heartbeat_provider_snapshot(None) is None
 
 
 def test_series_point_is_a_plain_value() -> None:

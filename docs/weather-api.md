@@ -416,6 +416,7 @@ distinguish "service down" from "store down" would otherwise have to parse a
 | `providers` | array | no | One entry per registered provider (see below), `[]` only if the registry is empty |
 | `providers[].provider` | string | no | |
 | `providers[].enabled` | boolean | no | |
+| `providers[].availability_source` | string | no | `tracker` or `web` — where `enabled` came from; see [5.2.2](#522-response) |
 | `providers[].newest_fetch_at` | string (time) | yes | |
 | `providers[].newest_fetch_age_seconds` | integer | yes | |
 | `providers[].newest_success_at` | string (time) | yes | Newest fetch with a 2xx status |
@@ -453,6 +454,7 @@ GET /api/v1/health
   "providers": [
     {
       "provider": "open-meteo",
+      "availability_source": "tracker",
       "enabled": true,
       "newest_fetch_at": "2026-09-17T08:35:02Z",
       "newest_fetch_age_seconds": 10,
@@ -461,6 +463,7 @@ GET /api/v1/health
     },
     {
       "provider": "met-no",
+      "availability_source": "tracker",
       "enabled": true,
       "newest_fetch_at": "2026-09-17T08:20:03Z",
       "newest_fetch_age_seconds": 909,
@@ -469,6 +472,7 @@ GET /api/v1/health
     },
     {
       "provider": "ims",
+      "availability_source": "tracker",
       "enabled": false,
       "newest_fetch_at": null,
       "newest_fetch_age_seconds": null,
@@ -502,6 +506,22 @@ every provider.
 
 #### 5.2.2 Response
 
+`enabled`, `enabled_reason` and `credential_present` describe the *tracker's*
+situation, not this service's. Only the tracker container is given the provider
+credentials (compose hands `docker/weather.env` to it alone), so the web service
+cannot evaluate them: it reports what the tracker published in its heartbeat.
+`availability_source` says which answer a response carries:
+
+| Value | Meaning |
+| --- | --- |
+| `tracker` | From the tracker's heartbeat — the process that actually holds the credentials and issues the fetches |
+| `web` | No heartbeat snapshot covers this provider, so the web service evaluated it against its own environment. Treat `credential_present` as "as seen from the web container", which is normally credential-free |
+
+A heartbeat older than three base ticks is still used — availability changes
+only when the tracker restarts — but its age is reported as a
+[`store_degraded`](#35-warnings) warning so a client never mistakes a stale
+snapshot for a fresh one.
+
 | Field | Type | Null? | Meaning |
 | --- | --- | --- | --- |
 | `generated_at` | string (time) | no | |
@@ -511,8 +531,9 @@ every provider.
 | `providers[].kind` | string | no | The kind this provider mainly yields: `observation`, `model` or `forecast` |
 | `providers[].enabled` | boolean | no | Effective enabled state |
 | `providers[].enabled_reason` | string | yes | Why it is disabled; `null` when enabled |
+| `providers[].availability_source` | string | no | `tracker` or `web` — where `enabled`, `enabled_reason` and `credential_present` came from |
 | `providers[].auth_required` | boolean | no | |
-| `providers[].credential_present` | boolean | no | Whether the credential is set. Never the credential itself |
+| `providers[].credential_present` | boolean | no | Whether the credential is set **where the tracker runs**. Never the credential itself, never its length |
 | `providers[].capabilities.variables` | array of string | no | Variable ids this provider can supply |
 | `providers[].capabilities.kinds` | array of string | no | Kinds it produces |
 | `providers[].capabilities.forecast_horizon_hours` | integer | yes | `null` when it has no forecast |
@@ -549,6 +570,7 @@ GET /api/v1/providers?enabled=true
       "kind": "model",
       "enabled": true,
       "enabled_reason": null,
+      "availability_source": "tracker",
       "auth_required": false,
       "credential_present": true,
       "capabilities": {
@@ -1412,7 +1434,7 @@ POST /api/v1/latest
 | `climate weather forecast` | `GET /forecast` |
 | `climate weather stats` | `GET /stats` |
 | `climate providers` | the local registry, with `GET /providers` only when it needs live state |
-| `climate doctor` | `GET /health` and `GET /stats` |
+| `climate doctor` | `GET /health`, `GET /providers` (credential state as the tracker sees it) and `GET /stats` |
 
 Exit-code mapping, which the API does not itself express:
 

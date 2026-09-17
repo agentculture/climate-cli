@@ -22,6 +22,12 @@ lease before issuing a single provider request, record a heartbeat so
 ``doctor``/the health route can see this process is alive, and drive the
 scheduler in the foreground until asked to stop.
 
+The heartbeat also carries a per-provider availability snapshot (see
+:func:`availability_snapshot`). Only this container is given the provider
+credentials, so the web API and ``doctor`` — which live outside it — have
+no way to evaluate availability themselves; publishing it here is what
+stops them reporting a happily collecting provider as disabled.
+
 Heartbeat wiring
 ----------------
 :class:`~climate.weather.scheduler.Scheduler` has no per-tick hook to
@@ -63,7 +69,7 @@ import sys
 import threading
 import uuid
 from datetime import UTC, datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from climate import __version__ as PACKAGE_VERSION
 from climate.cli._errors import EXIT_ENV_ERROR, EXIT_SUCCESS, CliError
@@ -74,7 +80,7 @@ from climate.weather import scheduler as weather_scheduler
 from climate.weather.config import load_tracker_config
 from climate.weather.providers import iter_providers
 
-__all__ = ["MongoLease", "main"]
+__all__ = ["MongoLease", "availability_snapshot", "main"]
 
 LOGGER = logging.getLogger("climate.weather.tracker")
 
@@ -148,11 +154,39 @@ class MongoLease:
         mongo.release_lease(self._collection, self._holder_id)
 
 
-def _save_heartbeat(store: Any) -> None:
+def availability_snapshot(
+    providers: Sequence[Any], config: Any, environ: Mapping[str, str]
+) -> dict[str, dict[str, Any]]:
+    """Each registered provider's availability, as the *tracker* sees it.
+
+    The tracker is the only process that is given the provider credentials
+    (``docker/weather.env`` is read by this container alone), so the web API
+    and ``doctor`` cannot evaluate availability for themselves — they would
+    report a collecting provider as disabled. Publishing this snapshot in the
+    heartbeat is how the truth leaves this process.
+
+    ``credential_present`` is a **boolean**, never the credential and never
+    anything derived from it (no length, no prefix); it is ``None`` for a
+    provider that needs no credential at all.
+    """
+    snapshot: dict[str, dict[str, Any]] = {}
+    for provider in providers:
+        settings = config.providers.get(provider.id)
+        availability = provider.availability(settings, environ)
+        env_var = provider.auth.env_var
+        snapshot[provider.id] = {
+            "enabled": bool(availability.enabled),
+            "reason": availability.reason,
+            "credential_present": bool(provider.credential(environ)) if env_var else None,
+        }
+    return snapshot
+
+
+def _save_heartbeat(store: Any, providers: Mapping[str, Mapping[str, Any]] | None = None) -> None:
     """Best-effort heartbeat: tolerate a store that does not implement it."""
     save = getattr(store, "save_heartbeat", None)
     if callable(save):
-        save(PACKAGE_VERSION, datetime.now(UTC))
+        save(PACKAGE_VERSION, datetime.now(UTC), providers=providers)
 
 
 def _release_lease(lease: MongoLease) -> None:
@@ -168,10 +202,12 @@ def _release_lease(lease: MongoLease) -> None:
         LOGGER.warning("releasing the fetch lease failed: %s", exc)
 
 
-def _record_start_heartbeat(store: Any) -> None:
+def _record_start_heartbeat(
+    store: Any, providers: Mapping[str, Mapping[str, Any]] | None = None
+) -> None:
     """Write the "on start" heartbeat, turning a store failure into a CliError."""
     try:
-        _save_heartbeat(store)
+        _save_heartbeat(store, providers)
     except Exception as exc:
         detail = weather_http.redact(f"{type(exc).__name__}: {exc}") or "the store rejected it"
         raise CliError(
@@ -199,7 +235,7 @@ def _start_tracking(
     anything unexpected becomes a :class:`CliError` with an exit code.
     """
     try:
-        _record_start_heartbeat(store)
+        _record_start_heartbeat(store, availability_snapshot(providers, config, environ))
         _drive_scheduler(
             store=store,
             providers=providers,
@@ -251,7 +287,9 @@ def _drive_scheduler(
             env=environ,
             base_tick_seconds=base_tick_seconds,
             logger=LOGGER,
-            heartbeat=lambda: _save_heartbeat(store),
+            heartbeat=lambda: _save_heartbeat(
+                store, availability_snapshot(providers, config, environ)
+            ),
         )
         scheduler.run(stop=stop_event)
     finally:

@@ -49,6 +49,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 __all__ = [
+    "HEARTBEAT_PROVIDER_FIELDS",
     "REDACTED",
     "SCHEMA_VERSION",
     "SECRET_QUERY_PARAMS",
@@ -63,6 +64,7 @@ __all__ = [
     "StoreError",
     "UnknownFetchError",
     "WeatherStore",
+    "heartbeat_provider_snapshot",
     "redact_url",
 ]
 
@@ -79,6 +81,47 @@ REDACTED = "REDACTED"
 SECRET_QUERY_PARAMS: frozenset[str] = frozenset(
     {"apikey", "api_key", "apitoken", "api_token", "appid", "access_token", "key", "token"}
 )
+
+#: The only keys one provider entry of a heartbeat's availability snapshot
+#: may carry: whether the provider may run, why not when it may not, and
+#: whether its credential was present *in the tracker's own environment*.
+#: A credential value — or anything derived from one, such as its length or
+#: a prefix of it — is deliberately not among them and is never stored.
+HEARTBEAT_PROVIDER_FIELDS: tuple[str, ...] = ("enabled", "reason", "credential_present")
+
+
+def heartbeat_provider_snapshot(
+    providers: Mapping[str, Mapping[str, Any]] | None,
+) -> dict[str, dict[str, Any]] | None:
+    """Normalize a per-provider availability snapshot for a heartbeat.
+
+    Only :data:`HEARTBEAT_PROVIDER_FIELDS` survive, and each is coerced to
+    its documented type, so a caller cannot smuggle a credential (or any
+    other unexpected key) into the stored document by accident:
+
+    * ``enabled`` — ``bool``.
+    * ``reason`` — the disabled reason, ``None`` when enabled or unstated.
+    * ``credential_present`` — ``bool``, or ``None`` when the provider needs
+      no credential at all.
+
+    ``None`` in gives ``None`` out, which is what a store with no snapshot
+    (an old heartbeat document) reads back as.
+    """
+    if providers is None:
+        return None
+    snapshot: dict[str, dict[str, Any]] = {}
+    for provider_id, entry in providers.items():
+        reason = entry.get("reason")
+        credential_present = entry.get("credential_present")
+        snapshot[str(provider_id)] = {
+            "enabled": bool(entry.get("enabled")),
+            "reason": str(reason) if reason else None,
+            "credential_present": (
+                None if credential_present is None else bool(credential_present)
+            ),
+        }
+    return snapshot
+
 
 #: What a normalized reading describes: a measurement, an analysis/model
 #: value for the present, or a value for a future time.
@@ -630,15 +673,34 @@ class InMemoryWeatherStore:
     # --- optional service extensions (not part of the WeatherStore protocol) --
     #
     # The tracker records a heartbeat carrying its package version so doctor
-    # can detect a stale image; callers reach these with ``getattr`` and
-    # tolerate their absence.
+    # can detect a stale image, and a per-provider availability snapshot
+    # because the tracker is the only process that sees the credentials;
+    # callers reach these with ``getattr`` and tolerate their absence.
 
-    def save_heartbeat(self, version: str, at: datetime) -> None:
-        """Record that a tracker running ``version`` was alive at ``at`` (UTC)."""
-        self._heartbeat = {"version": version, "at": at}
+    def save_heartbeat(
+        self,
+        version: str,
+        at: datetime,
+        providers: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Record that a tracker running ``version`` was alive at ``at`` (UTC).
+
+        ``providers`` is the optional per-provider availability snapshot
+        described by :func:`heartbeat_provider_snapshot`, which sanitizes it
+        before it is stored. Omitting it keeps the two-argument call shape
+        this method shipped with.
+        """
+        self._heartbeat = {
+            "version": version,
+            "at": at,
+            "providers": heartbeat_provider_snapshot(providers),
+        }
 
     def latest_heartbeat(self) -> dict[str, Any] | None:
-        """The newest tracker heartbeat as ``{"version", "at"}``, or ``None``."""
+        """The newest heartbeat as ``{"version", "at", "providers"}``, or ``None``.
+
+        ``providers`` is ``None`` when the tracker wrote no snapshot.
+        """
         return dict(self._heartbeat) if self._heartbeat else None
 
     def size_bytes(self) -> int | None:

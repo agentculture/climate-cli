@@ -39,7 +39,9 @@ guessed or fabricated:
 * ``providers[].freshness.expected_update_seconds`` and ``.notes`` — no such
   fields on the provider contract.
 * ``health.tracker_version`` — no fetch record or reading carries a
-  ``climate`` version; the store has no heartbeat API either.
+  ``climate`` version; it comes from the tracker's optional heartbeat (with
+  its per-provider availability snapshot) and is ``null`` until one is
+  written.
 * ``store.size_bytes`` and ``store.backend`` (best-effort guess from the
   store's module/class name; the ``WeatherStore`` protocol declares neither).
 
@@ -62,7 +64,7 @@ from functools import wraps
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import product
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlsplit
 
 from climate import __version__ as PACKAGE_VERSION
@@ -70,12 +72,15 @@ from climate.weather import vocabulary
 from climate.weather.config import WeatherConfig
 from climate.weather.providers import Capability, FreshnessStrategy
 from climate.weather.providers.base import WeatherProvider
+from climate.weather.scheduler import DEFAULT_BASE_TICK_SECONDS
 from climate.weather.store import SCHEMA_VERSION, Reading, WeatherStore
 
 __all__ = [
     "API_VERSION",
     "ApiError",
+    "ProviderAvailability",
     "WeatherRequestHandler",
+    "availability_map",
     "create_server",
     "dispatch",
     "forecast",
@@ -410,12 +415,10 @@ def _validate_kinds(names: Iterable[str], *, allow_forecast: bool) -> None:
             )
 
 
-def _enabled_provider_ids(providers: Sequence[WeatherProvider], config: WeatherConfig) -> list[str]:
-    return [
-        provider.id
-        for provider in providers
-        if provider.availability(config.providers.get(provider.id), os.environ).enabled
-    ]
+def _enabled_provider_ids(
+    providers: Sequence[WeatherProvider], availability: Mapping[str, ProviderAvailability]
+) -> list[str]:
+    return [provider.id for provider in providers if availability[provider.id].enabled]
 
 
 def _selected_locations(
@@ -440,6 +443,137 @@ def _selected_providers(
         _validate_providers(requested, providers)
         return requested
     return list(default_ids)
+
+
+# --- provider availability ----------------------------------------------------
+#
+# The web container is deliberately NOT given the provider credentials: only
+# the tracker reads ``docker/weather.env``. Evaluating ``provider.availability``
+# against *this* process's environment therefore reports a provider that is
+# collecting happily as "disabled, no credential" — which is exactly what the
+# dashboard showed once the credentials were removed from this service.
+#
+# The tracker publishes what it sees in its heartbeat, so that snapshot is the
+# answer whenever there is one; this process's own evaluation is the fallback,
+# and every availability-bearing response says which of the two it used.
+
+
+class ProviderAvailability(NamedTuple):
+    """One provider's effective availability, and where the answer came from.
+
+    ``source`` is :data:`AVAILABILITY_SOURCE_TRACKER` when it came from the
+    tracker's heartbeat snapshot (the process that actually holds the
+    credentials) and :data:`AVAILABILITY_SOURCE_WEB` when this process had to
+    evaluate it against its own environment because no snapshot exists.
+    """
+
+    enabled: bool
+    reason: str | None
+    credential_present: bool
+    source: str
+
+
+#: ``availability_source`` values (contract section 5.2.2).
+AVAILABILITY_SOURCE_TRACKER = "tracker"
+AVAILABILITY_SOURCE_WEB = "web"
+
+#: A heartbeat older than this is still used — availability changes only on a
+#: tracker restart today, so a stale snapshot is far better than this
+#: process's credential-blind guess — but its age is surfaced as a warning.
+HEARTBEAT_STALE_TICKS = 3
+HEARTBEAT_STALE_SECONDS = HEARTBEAT_STALE_TICKS * DEFAULT_BASE_TICK_SECONDS
+
+
+def _latest_heartbeat(store: WeatherStore) -> Mapping[str, Any] | None:
+    """The newest tracker heartbeat, or ``None``.
+
+    Optional store extension (not on the ``WeatherStore`` protocol), and a
+    store that is merely unreachable must not fail a route that can still
+    answer, so both absence and failure resolve to ``None``.
+    """
+    latest = getattr(store, "latest_heartbeat", None)
+    if not callable(latest):
+        return None
+    try:
+        heartbeat = latest()
+    except Exception:  # noqa: BLE001 - availability must never fail a route
+        return None
+    return heartbeat if isinstance(heartbeat, Mapping) else None
+
+
+def _heartbeat_age_seconds(heartbeat: Mapping[str, Any] | None, now: datetime) -> int | None:
+    at = heartbeat.get("at") if heartbeat else None
+    if not isinstance(at, datetime):
+        return None
+    return _age_seconds(now, at if at.tzinfo is not None else at.replace(tzinfo=UTC))
+
+
+def _tracker_availability(entry: Any) -> ProviderAvailability | None:
+    """One snapshot entry as a :class:`ProviderAvailability`, or ``None``."""
+    if not isinstance(entry, Mapping):
+        return None
+    reason = entry.get("reason")
+    present = entry.get("credential_present")
+    return ProviderAvailability(
+        enabled=bool(entry.get("enabled")),
+        reason=str(reason) if reason else None,
+        # ``None`` in the snapshot means "this provider needs no credential",
+        # which the contract's non-null ``credential_present`` spells ``true``.
+        credential_present=True if present is None else bool(present),
+        source=AVAILABILITY_SOURCE_TRACKER,
+    )
+
+
+def _web_availability(provider: WeatherProvider, settings: Any) -> ProviderAvailability:
+    availability = provider.availability(settings, os.environ)
+    env_var = provider.auth.env_var
+    return ProviderAvailability(
+        enabled=availability.enabled,
+        reason=availability.reason,
+        credential_present=bool(os.environ.get(env_var)) if env_var else True,
+        source=AVAILABILITY_SOURCE_WEB,
+    )
+
+
+def availability_map(
+    store: WeatherStore,
+    config: WeatherConfig,
+    providers: Sequence[WeatherProvider],
+    now: datetime,
+) -> tuple[dict[str, ProviderAvailability], int | None]:
+    """``({provider_id: ProviderAvailability}, heartbeat_age_seconds)``.
+
+    The tracker's snapshot wins per provider; a provider missing from it (or
+    no heartbeat at all) falls back to this process's own evaluation. The age
+    is ``None`` when no snapshot was used.
+    """
+    heartbeat = _latest_heartbeat(store)
+    raw = heartbeat.get("providers") if heartbeat else None
+    snapshot: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    resolved: dict[str, ProviderAvailability] = {}
+    used_snapshot = False
+    for provider in providers:
+        from_tracker = _tracker_availability(snapshot.get(provider.id))
+        used_snapshot = used_snapshot or from_tracker is not None
+        resolved[provider.id] = from_tracker or _web_availability(
+            provider, config.providers.get(provider.id)
+        )
+    age = _heartbeat_age_seconds(heartbeat, now) if used_snapshot else None
+    return resolved, age
+
+
+def _heartbeat_warnings(age_seconds: int | None) -> list[dict[str, Any]]:
+    """A warning when the availability snapshot in use is older than expected."""
+    if age_seconds is None or age_seconds <= HEARTBEAT_STALE_SECONDS:
+        return []
+    return [
+        _warning(
+            "store_degraded",
+            f"The tracker's availability snapshot is {age_seconds}s old "
+            f"(expected within {HEARTBEAT_STALE_SECONDS}s); provider availability "
+            "may be out of date.",
+        )
+    ]
 
 
 # --- shared reading/provenance builders -------------------------------------
@@ -605,12 +739,13 @@ def _health_provider_row(
     settings: Any,
     now: datetime,
     *,
-    enabled: bool,
+    availability: ProviderAvailability,
     reachable: bool,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "provider": provider.id,
-        "enabled": enabled,
+        "enabled": availability.enabled,
+        "availability_source": availability.source,
         "newest_fetch_at": None,
         "newest_fetch_age_seconds": None,
         "newest_success_at": None,
@@ -650,13 +785,14 @@ def health(
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
     reachable, latency_ms, fetch_count, newest_fetch = _health_store_snapshot(store, now)
-    warnings: list[dict[str, Any]] = []
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
+    warnings: list[dict[str, Any]] = _heartbeat_warnings(heartbeat_age)
     provider_rows = []
     any_enabled_stale = False
 
     for provider in providers:
         settings = config.providers.get(provider.id)
-        availability = provider.availability(settings, os.environ)
+        availability = availability_by_id[provider.id]
         if not availability.enabled and availability.reason:
             warnings.append(
                 _warning(
@@ -666,7 +802,7 @@ def health(
                 )
             )
         row = _health_provider_row(
-            store, provider, settings, now, enabled=availability.enabled, reachable=reachable
+            store, provider, settings, now, availability=availability, reachable=reachable
         )
         if availability.enabled and row["stale"]:
             any_enabled_stale = True
@@ -728,12 +864,11 @@ def _provider_row(
     config: WeatherConfig,
     provider: WeatherProvider,
     settings: Any,
-    availability: Any,
+    availability: ProviderAvailability,
 ) -> dict[str, Any]:
     kinds = sorted(
         {_CAPABILITY_TO_KIND[c] for c in provider.capabilities if c in _CAPABILITY_TO_KIND}
     )
-    env_var = provider.auth.env_var
     return {
         "provider": provider.id,
         # GAP: no display title on the provider contract; derived from id.
@@ -741,8 +876,9 @@ def _provider_row(
         "kind": kinds[0] if kinds else "model",
         "enabled": availability.enabled,
         "enabled_reason": availability.reason,
+        "availability_source": availability.source,
         "auth_required": provider.auth.required,
-        "credential_present": bool(os.environ.get(env_var)) if env_var else True,
+        "credential_present": availability.credential_present,
         "capabilities": {
             "variables": [],  # GAP: capabilities are kind-level, not variable-level
             "kinds": kinds,
@@ -778,18 +914,23 @@ def list_providers(
     requested_ids = get_repeatable(query_params, "provider")
     _validate_providers(requested_ids, providers)
     enabled_filter = get_bool(query_params, "enabled")
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
 
     rows = []
     for provider in providers:
         if requested_ids and provider.id not in requested_ids:
             continue
         settings = config.providers.get(provider.id)
-        availability = provider.availability(settings, os.environ)
+        availability = availability_by_id[provider.id]
         if enabled_filter is not None and availability.enabled != enabled_filter:
             continue
         rows.append(_provider_row(store, config, provider, settings, availability))
 
-    return 200, {"generated_at": _format_time(now), "providers": rows, "warnings": []}
+    return 200, {
+        "generated_at": _format_time(now),
+        "providers": rows,
+        "warnings": _heartbeat_warnings(heartbeat_age),
+    }
 
 
 # --- GET /locations -----------------------------------------------------------
@@ -840,9 +981,9 @@ def _newest_reading(
 
 
 def _missing_reason(
-    store: WeatherStore, provider: WeatherProvider, settings: Any, label: str
+    store: WeatherStore, provider: WeatherProvider, availability: ProviderAvailability, label: str
 ) -> str:
-    if not provider.availability(settings, os.environ).enabled:
+    if not availability.enabled:
         return "provider_disabled"
     has_fetches = _store_call(store.count_fetches, provider=provider.id, location=label) > 0
     return "no_fresh_reading" if has_fetches else "no_data"
@@ -857,8 +998,9 @@ def latest(
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
     requested_locations = _selected_locations(query_params, config)
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
     provider_ids = _selected_providers(
-        query_params, providers, _enabled_provider_ids(providers, config)
+        query_params, providers, _enabled_provider_ids(providers, availability_by_id)
     )
 
     requested_variables = get_repeatable(query_params, "variables")
@@ -880,7 +1022,7 @@ def latest(
         for label in requested_locations:
             reading = _newest_reading(store, pid, label, requested_kinds)
             if reading is None:
-                reason = _missing_reason(store, provider, settings, label)
+                reason = _missing_reason(store, provider, availability_by_id[pid], label)
                 missing.append({"provider": pid, "location": label, "reason": reason})
                 continue
             reading_dict, stale = _build_reading(
@@ -890,7 +1032,7 @@ def latest(
             readings_out.append(reading_dict)
 
     readings_out.sort(key=lambda row: (row["provider"], row["location"]))
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = _heartbeat_warnings(heartbeat_age)
     if not readings_out:
         warnings.append(_warning("no_data", "No readings matched the request."))
 
@@ -1093,8 +1235,9 @@ def series(
     _validate_variables([variable])
 
     requested_locations = _selected_locations(query_params, config)
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
     requested_providers = _selected_providers(
-        query_params, providers, _enabled_provider_ids(providers, config)
+        query_params, providers, _enabled_provider_ids(providers, availability_by_id)
     )
     from_dt, to_dt = _series_window(query_params, now)
 
@@ -1132,7 +1275,7 @@ def series(
         agg=agg,
     )
 
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = _heartbeat_warnings(heartbeat_age)
     if not entries:
         warnings.append(
             _warning("no_data", f"No stored fetch covers the requested window for {variable}.")
@@ -1327,6 +1470,7 @@ def forecast(
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
     requested_locations = _selected_locations(query_params, config)
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
     requested_providers = _selected_providers(
         query_params,
         providers,
@@ -1334,7 +1478,7 @@ def forecast(
             provider.id
             for provider in providers
             if Capability.FORECAST in provider.capabilities
-            and provider.availability(config.providers.get(provider.id), os.environ).enabled
+            and availability_by_id[provider.id].enabled
         ],
     )
 
@@ -1365,7 +1509,7 @@ def forecast(
                 continue
             forecasts_out.append(_build_forecast_entry(group, horizon_hours, step_hours, now))
 
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = _heartbeat_warnings(heartbeat_age)
     if not forecasts_out:
         warnings.append(_warning("no_data", "No stored forecast matched the request."))
 
@@ -1493,6 +1637,7 @@ def _stats_row(
     settings: Any,
     label: str | None,
     *,
+    availability: ProviderAvailability,
     from_dt: datetime,
     to_dt: datetime,
     window_seconds: int,
@@ -1526,7 +1671,7 @@ def _stats_row(
     row: dict[str, Any] = {
         "provider": pid,
         "location": label,
-        "enabled": provider.availability(settings, os.environ).enabled,
+        "enabled": availability.enabled,
         "freshness_strategy": str(provider.freshness) if provider.freshness else None,
         "interval_seconds": interval_seconds,
         "due_count": due_count,
@@ -1589,10 +1734,11 @@ def stats(
     # configured location at all: ``[None]`` means "any location".
     requested_locations: Sequence[str | None] = _selected_locations(query_params, config) or [None]
     bucket = _stats_bucket(query_params, window_seconds)
+    availability_by_id, heartbeat_age = availability_map(store, config, providers, now)
 
     provider_by_id = {provider.id: provider for provider in providers}
     rows = []
-    warnings: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = _heartbeat_warnings(heartbeat_age)
 
     for pid, label in product(requested_providers, requested_locations):
         row, capped = _stats_row(
@@ -1600,6 +1746,7 @@ def stats(
             provider_by_id[pid],
             config.providers.get(pid),
             label,
+            availability=availability_by_id[pid],
             from_dt=from_dt,
             to_dt=to_dt,
             window_seconds=window_seconds,

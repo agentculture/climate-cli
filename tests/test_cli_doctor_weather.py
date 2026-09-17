@@ -21,6 +21,7 @@ from climate.cli import main
 from climate.cli._commands import backup as backup_mod
 from climate.cli._commands import doctor
 from climate.cli._commands import stack as stack_mod
+from tests.weather.neutral import fake_secret
 
 NOW = datetime(2026, 9, 17, 8, 35, 12, tzinfo=UTC)
 
@@ -68,9 +69,49 @@ def _health_payload(**overrides):
     return payload
 
 
-def _fake_fetch_for(body: dict, status: int = 200):
+def _provider_row(
+    provider: str,
+    env_var: str | None = None,
+    *,
+    credential_present: bool = True,
+    enabled: bool | None = None,
+    enabled_reason: str | None = None,
+):
+    """One ``GET /providers`` row, as the API reports the *tracker's* answer."""
+    enabled = credential_present if enabled is None else enabled
+    if enabled_reason is None and not enabled and env_var:
+        enabled_reason = f"{env_var} is not set; set it to enable {provider}"
+    return {
+        "provider": provider,
+        "enabled": enabled,
+        "enabled_reason": enabled_reason,
+        "availability_source": "tracker",
+        "auth_required": env_var is not None,
+        "credential_present": credential_present,
+    }
+
+
+def _providers_payload(rows: list | None = None):
+    """A ``GET /providers`` body; by default both credentialed providers lack theirs."""
+    if rows is None:
+        rows = [
+            _provider_row("openweather", "CLIMATE_OPENWEATHER_API_KEY", credential_present=False),
+            _provider_row("ims", "CLIMATE_IMS_API_TOKEN", credential_present=False),
+        ]
+    return {"generated_at": "2026-09-17T08:35:12Z", "providers": rows, "warnings": []}
+
+
+def _fake_fetch_for(body: dict, status: int = 200, providers: dict | None = None):
+    """A fake ``fetch`` answering ``/providers`` and, for anything else, ``/health``.
+
+    Doctor asks the API about provider credentials now — the tracker is the
+    only process that sees them — so the fake has to answer both routes.
+    """
+    providers_body = _providers_payload() if providers is None else providers
+
     def _fetch(url, **kwargs):
-        return SimpleNamespace(status=status, body=json.dumps(body).encode("utf-8"), error=None)
+        payload = providers_body if url.endswith("/providers") else body
+        return SimpleNamespace(status=status, body=json.dumps(payload).encode("utf-8"), error=None)
 
     return _fetch
 
@@ -324,13 +365,17 @@ def test_provider_credentials_present_passes(
     compose.write_text("services: {}\n")
     monkeypatch.setattr(stack_mod, "find_compose", lambda: compose)
     services = [{"Name": "n", "Service": "n", "State": "running", "Health": ""}]
-    env = {
-        "CLIMATE_OPENWEATHER_API_KEY": "secret-key-value",
-        "CLIMATE_IMS_API_TOKEN": "secret-token-value",
-    }
+    key, token = fake_secret("openweather-key"), fake_secret("ims-token")
+    env = {"CLIMATE_OPENWEATHER_API_KEY": key, "CLIMATE_IMS_API_TOKEN": token}
+    providers = _providers_payload(
+        [
+            _provider_row("openweather", "CLIMATE_OPENWEATHER_API_KEY"),
+            _provider_row("ims", "CLIMATE_IMS_API_TOKEN"),
+        ]
+    )
     checks = doctor._weather_checks(
         run=_fake_run_ok(services),
-        fetch=_fake_fetch_for(_health_payload()),
+        fetch=_fake_fetch_for(_health_payload(), providers=providers),
         env=env,
         now=NOW,
         which=lambda name: "/usr/bin/docker",
@@ -339,8 +384,89 @@ def test_provider_credentials_present_passes(
     assert ow_check["passed"] is True
     # never print the secret value itself anywhere in the checks
     dumped = json.dumps(checks)
-    assert "secret-key-value" not in dumped
-    assert "secret-token-value" not in dumped
+    assert key not in dumped
+    assert token not in dumped
+
+
+def test_provider_credentials_follow_the_api_not_this_host_shell(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression: only the tracker container is given the credentials.
+
+    A key in ``docker/weather.env`` never reaches this host shell, so doctor
+    must take ``credential_present`` from the API (which reports what the
+    tracker published) instead of reporting a collecting provider as
+    unconfigured.
+    """
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n")
+    monkeypatch.setattr(stack_mod, "find_compose", lambda: compose)
+    services = [{"Name": "n", "Service": "n", "State": "running", "Health": ""}]
+    providers = _providers_payload(
+        [
+            _provider_row("openweather", "CLIMATE_OPENWEATHER_API_KEY"),
+            _provider_row("ims", "CLIMATE_IMS_API_TOKEN", credential_present=False),
+        ]
+    )
+    checks = doctor._weather_checks(
+        run=_fake_run_ok(services),
+        fetch=_fake_fetch_for(_health_payload(), providers=providers),
+        env={},  # the host shell has no credential at all
+        now=NOW,
+        which=lambda name: "/usr/bin/docker",
+    )
+    ow_check = _by_id(checks, "weather_provider_credentials_openweather")
+    assert ow_check["passed"] is True
+    assert ow_check["severity"] == "warning"
+    assert "tracker" in ow_check["message"]
+
+    # and the one the tracker really cannot see still fails
+    ims_check = _by_id(checks, "weather_provider_credentials_ims")
+    assert ims_check["passed"] is False
+
+
+def test_provider_credentials_fall_back_honestly_when_the_api_is_unreachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no API to ask, doctor says the state is unknown *from here*."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n")
+    monkeypatch.setattr(stack_mod, "find_compose", lambda: compose)
+    services = [{"Name": "n", "Service": "n", "State": "running", "Health": ""}]
+    checks = doctor._weather_checks(
+        run=_fake_run_ok(services),
+        fetch=_fake_fetch_unreachable(),
+        env={},
+        now=NOW,
+        which=lambda name: "/usr/bin/docker",
+    )
+    ow_check = _by_id(checks, "weather_provider_credentials_openweather")
+    assert ow_check["severity"] == "info"
+    assert ow_check["passed"] is True
+    assert "cannot tell" in ow_check["message"]
+    assert "docker/weather.env" in ow_check["message"]
+
+
+def test_provider_credentials_unknown_when_the_api_omits_the_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reachable API that lists no such provider is still an unanswered question."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n")
+    monkeypatch.setattr(stack_mod, "find_compose", lambda: compose)
+    services = [{"Name": "n", "Service": "n", "State": "running", "Health": ""}]
+    checks = doctor._weather_checks(
+        run=_fake_run_ok(services),
+        fetch=_fake_fetch_for(
+            _health_payload(), providers=_providers_payload([_provider_row("open-meteo")])
+        ),
+        env={},
+        now=NOW,
+        which=lambda name: "/usr/bin/docker",
+    )
+    ow_check = _by_id(checks, "weather_provider_credentials_openweather")
+    assert ow_check["severity"] == "info"
+    assert "reported no such provider" in ow_check["message"]
 
 
 def test_fetch_age_for_disabled_provider_passes_as_info(
