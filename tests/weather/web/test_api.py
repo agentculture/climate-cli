@@ -9,10 +9,12 @@ merged ``climate.weather.providers.base`` contract.
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from climate.weather import vocabulary
 from climate.weather.config import Location, WeatherConfig
 from climate.weather.providers.base import (
     Attribution,
@@ -428,12 +430,175 @@ def test_series_truncates_to_max_points_with_warning(store, config, providers) -
     assert any(w["code"] == "truncated" for w in body["warnings"])
 
 
+def test_series_rejects_a_window_longer_than_the_documented_maximum(
+    store, config, providers
+) -> None:
+    """qodo-4: an unbounded span is what let the store query run unbounded."""
+    span = timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS + 1)
+    query = {
+        "variable": ["temperature"],
+        "from": [api._format_time(NOW - span)],
+        "to": [api._format_time(NOW)],
+    }
+    status, body = api.series(store, config, providers, query, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert str(api.MAX_WINDOW_SPAN_SECONDS) in body["error"]["message"]
+    assert body["error"]["detail"]["max_span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS
+
+
+def test_series_multi_year_window_at_minimum_step_answers_promptly(
+    store, config, providers
+) -> None:
+    """qodo-4: the old handler built the whole grid before applying max_points.
+
+    A multi-year window at the 60 s minimum names millions of buckets. The
+    span guard is arithmetic, so the answer is immediate rather than after
+    millions of ``datetime`` allocations.
+    """
+    query = {
+        "variable": ["temperature"],
+        "from": [api._format_time(NOW - timedelta(days=5 * 365))],
+        "to": [api._format_time(NOW)],
+        "step": [str(api.MIN_SERIES_STEP_SECONDS)],
+    }
+    started = time.perf_counter()
+    status, body = api.series(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_series_largest_allowed_window_at_minimum_step_answers_promptly(
+    store, config, providers
+) -> None:
+    """The widest *accepted* window is still half a million buckets at 60 s;
+    only ``max_points`` of them may ever be allocated."""
+    query = {
+        "variable": ["temperature"],
+        "from": [api._format_time(NOW - timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS))],
+        "to": [api._format_time(NOW)],
+        "step": [str(api.MIN_SERIES_STEP_SECONDS)],
+        # Ask for more than the ceiling: it is clamped, never honoured.
+        "max_points": [str(api.MAX_SERIES_POINTS * 100)],
+    }
+    started = time.perf_counter()
+    status, body = api.series(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 200
+    assert body["point_count"] == api.MAX_SERIES_POINTS
+    assert any(w["code"] == "truncated" for w in body["warnings"])
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_series_truncation_keeps_the_earliest_buckets_and_narrows_to(
+    store, config, providers
+) -> None:
+    from_dt = NOW - timedelta(hours=1)
+    query = {
+        "variable": ["temperature"],
+        "from": [api._format_time(from_dt)],
+        "to": [api._format_time(NOW)],
+        "step": ["60"],
+        "max_points": ["5"],
+    }
+    status, body = api.series(store, config, providers, query, NOW)
+    assert status == 200
+    assert body["point_count"] == 5
+    assert body["from"] == api._format_time(from_dt)
+    # The window the response actually covers, not the one that was asked for.
+    assert body["to"] == api._format_time(from_dt + timedelta(minutes=5))
+
+
+def test_series_bounds_the_store_query_with_a_limit(store, config, providers) -> None:
+    """qodo-4: the store query used to have no limit at all."""
+    seen: dict[str, object] = {}
+
+    class _RecordingStore(InMemoryWeatherStore):
+        def series(self, variable, **kwargs):
+            seen.update(kwargs)
+            return super().series(variable, **kwargs)
+
+    recording = _RecordingStore()
+    status, _ = api.series(recording, config, providers, {"variable": ["temperature"]}, NOW)
+    assert status == 200
+    assert seen["limit"] == api.MAX_SERIES_STORE_POINTS
+
+
+# --- the shared vocabulary (climate/weather/vocabulary.py) --------------------
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ["showers", "snowfall", "cloud_cover_low", "uv_index_clear_sky", "is_day", "temperature_max"],
+)
+def test_extended_vocabulary_variables_are_queryable(store, config, providers, variable) -> None:
+    """qodo-5: these were stored by the adapters but rejected by the API."""
+    _save_reading(
+        store,
+        provider="test-model",
+        source="v1/forecast",
+        location=NEUTRAL_LABEL,
+        observed_at=NOW - timedelta(minutes=5),
+        requested_at=NOW - timedelta(minutes=5),
+        kind="model",
+        values={variable: (1.0, vocabulary.VARIABLES[variable])},
+    )
+    status, body = api.latest(store, config, providers, {"variables": [variable]}, NOW)
+    assert status == 200
+    assert body["readings"][0]["values"][variable]["value"] == 1.0
+
+    status, body = api.series(store, config, providers, {"variable": [variable]}, NOW)
+    assert status == 200
+    assert body["unit"] == vocabulary.VARIABLES[variable]
+
+
+def test_series_serves_an_extension_variable_with_its_stored_unit(store, config, providers) -> None:
+    """Section 4: ``x_`` variables are never dropped, so they stay queryable."""
+    _save_reading(
+        store,
+        provider="test-model",
+        source="v1/forecast",
+        location=NEUTRAL_LABEL,
+        observed_at=NOW - timedelta(minutes=5),
+        requested_at=NOW - timedelta(minutes=5),
+        kind="model",
+        values={"x_snow_depth": (0.12, "m")},
+    )
+    status, body = api.series(store, config, providers, {"variable": ["x_snow_depth"]}, NOW)
+    assert status == 200
+    assert body["unit"] == "m"
+    assert body["series"][0]["unit"] == "m"
+
+
+def test_series_extension_variable_with_no_data_falls_back_to_other(
+    store, config, providers
+) -> None:
+    status, body = api.series(store, config, providers, {"variable": ["x_unheard_of"]}, NOW)
+    assert status == 200
+    assert body["unit"] == "other"
+    assert body["series"] == []
+
+
+def test_a_bare_x_prefix_is_still_an_unknown_variable(store, config, providers) -> None:
+    status, body = api.series(store, config, providers, {"variable": ["x_"]}, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "unknown_variable"
+
+
+def test_api_variable_units_is_the_shared_vocabulary(store, config, providers) -> None:
+    assert api.VARIABLE_UNITS is vocabulary.VARIABLES
+
+
 # --- /forecast ----------------------------------------------------------------------
 
 
 def test_forecast_returns_stored_horizon(store, config, providers) -> None:
     issued_at = NOW - timedelta(hours=1)
     requested_at = issued_at
+    # This provider states no model-run time, so issued_at falls back to the
+    # fetch time and the entry says so (see the dedicated tests below).
     fetch = FetchRecord(
         provider="test-model",
         endpoint="https://example.test/test-model",
@@ -475,9 +640,144 @@ def test_forecast_returns_stored_horizon(store, config, providers) -> None:
     assert forecast_entry["points"][0]["lead_seconds"] == 3600
     assert forecast_entry["points"][0]["values"]["temperature"] == 21.0
     assert forecast_entry["units"]["temperature"] == "degC"
-    # Documented gaps: no separate model-run/station data on Reading.
+    # This fixture stores no model_run_at, so the issue time is the fetch
+    # time and the response admits the substitution.
     assert forecast_entry["provenance"]["model_run_at"] is None
+    assert forecast_entry["issued_at_estimated"] is True
+    assert forecast_entry["issued_at"] == api._format_time(requested_at)
+    # Still a documented gap: Reading has no station field.
     assert forecast_entry["provenance"]["station"] is None
+
+
+def _save_forecast(
+    store: InMemoryWeatherStore,
+    *,
+    requested_at: datetime,
+    valid_ats: tuple[datetime, ...],
+    model_run_at: datetime | None = None,
+    variable: str = "temperature",
+    unit: str = "degC",
+) -> str:
+    fetch_id = store.save_fetch(
+        FetchRecord(
+            provider="test-model",
+            endpoint="https://example.test/test-model",
+            location=NEUTRAL_LABEL,
+            requested_at=requested_at,
+            status=200,
+            body=b"{}",
+        )
+    )
+    store.save_readings(
+        fetch_id,
+        [
+            Reading(
+                provider="test-model",
+                source="v1/forecast",
+                model="best_match",
+                location=NEUTRAL_LABEL,
+                observed_at=valid_at,
+                requested_at=requested_at,
+                model_run_at=model_run_at,
+                kind="forecast",
+                values={variable: Measurement(value=float(index), unit=unit)},
+            )
+            for index, valid_at in enumerate(valid_ats)
+        ],
+    )
+    return fetch_id
+
+
+def _forecast_entry(store, config, providers, **extra) -> dict:
+    query = {"location": [NEUTRAL_LABEL], "provider": ["test-model"], **extra}
+    status, body = api.forecast(store, config, providers, query, NOW)
+    assert status == 200
+    return body["forecasts"][0]
+
+
+def test_forecast_issue_time_is_the_providers_model_run_not_the_fetch(
+    store, config, providers
+) -> None:
+    """qodo-14: the tracker's download time is not the model's issue time."""
+    model_run_at = NOW - timedelta(hours=7)
+    requested_at = NOW - timedelta(hours=6)
+    _save_forecast(
+        store,
+        requested_at=requested_at,
+        model_run_at=model_run_at,
+        valid_ats=(NOW + timedelta(hours=1), NOW + timedelta(hours=2)),
+    )
+    entry = _forecast_entry(store, config, providers)
+    assert entry["issued_at"] == api._format_time(model_run_at)
+    assert entry["issued_at_estimated"] is False
+    assert entry["provenance"]["model_run_at"] == api._format_time(model_run_at)
+    assert entry["requested_at"] == api._format_time(requested_at)
+    assert entry["points"][0]["lead_seconds"] == 8 * 3600
+
+
+def test_forecast_horizon_is_measured_from_now_not_from_the_issue(store, config, providers) -> None:
+    """qodo-14: a six-hour-old issue still carries valid future points.
+
+    Measured from the issue time a ``horizon_hours=3`` window ended three
+    hours before ``now`` and discarded every one of them.
+    """
+    _save_forecast(
+        store,
+        requested_at=NOW - timedelta(hours=6),
+        valid_ats=(NOW + timedelta(hours=1), NOW + timedelta(hours=2)),
+    )
+    entry = _forecast_entry(store, config, providers, horizon_hours=["3"])
+    assert entry["point_count"] == 2
+    assert entry["points"][0]["valid_at"] == api._format_time(NOW + timedelta(hours=1))
+
+
+def test_forecast_excludes_points_already_in_the_past(store, config, providers) -> None:
+    _save_forecast(
+        store,
+        requested_at=NOW - timedelta(hours=6),
+        valid_ats=(
+            NOW - timedelta(hours=2),
+            NOW - timedelta(hours=1),
+            NOW + timedelta(hours=1),
+        ),
+    )
+    entry = _forecast_entry(store, config, providers, horizon_hours=["6"])
+    assert [point["valid_at"] for point in entry["points"]] == [
+        api._format_time(NOW + timedelta(hours=1))
+    ]
+
+
+def test_a_fully_expired_forecast_is_no_data_not_an_empty_entry(store, config, providers) -> None:
+    """Every point is in the past, so the issue carries no forecast at all.
+
+    The store is asked only for points from ``now`` onwards — reading a
+    provider's whole stored forecast history to discard it would be work
+    done for nothing.
+    """
+    _save_forecast(
+        store,
+        requested_at=NOW - timedelta(days=2),
+        valid_ats=(NOW - timedelta(hours=5), NOW - timedelta(hours=4)),
+    )
+    status, body = api.forecast(
+        store, config, providers, {"location": [NEUTRAL_LABEL], "provider": ["test-model"]}, NOW
+    )
+    assert status == 200
+    assert body["forecasts"] == []
+    assert any(w["code"] == "no_data" for w in body["warnings"])
+
+
+def test_forecast_reports_an_extension_variables_stored_unit(store, config, providers) -> None:
+    _save_forecast(
+        store,
+        requested_at=NOW - timedelta(hours=1),
+        valid_ats=(NOW + timedelta(hours=1),),
+        variable="x_snow_depth",
+        unit="m",
+    )
+    entry = _forecast_entry(store, config, providers, variables=["x_snow_depth"])
+    assert entry["variables"] == ["x_snow_depth"]
+    assert entry["units"] == {"x_snow_depth": "m"}
 
 
 def test_forecast_empty_is_200_with_warning(store, config, providers) -> None:
@@ -527,6 +827,107 @@ def test_stats_rejects_bad_window(store, config, providers) -> None:
 def test_stats_bucket_must_meet_minimum(store, config, providers) -> None:
     status, body = api.stats(store, config, providers, {"bucket": ["10"]}, NOW)
     assert status == 400
+
+
+def _save_fetches(store: InMemoryWeatherStore, count: int, *, spacing_seconds: int = 900) -> None:
+    """``count`` bare fetch records ending just before ``NOW``."""
+    for index in range(count):
+        store.save_fetch(
+            FetchRecord(
+                provider="test-model",
+                endpoint="https://example.test/test-model",
+                location=NEUTRAL_LABEL,
+                requested_at=NOW - timedelta(seconds=(index + 1) * spacing_seconds),
+                status=200,
+                body=b"{}",
+            )
+        )
+
+
+def test_stats_rejects_a_window_longer_than_the_documented_maximum(
+    store, config, providers
+) -> None:
+    """Same defect class as the /series span: an untrusted window with no
+    ``bucket`` iterated the store with nothing bounding it."""
+    span = timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS + 1)
+    query = {"from": [api._format_time(NOW - span)], "to": [api._format_time(NOW)]}
+    status, body = api.stats(store, config, providers, query, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert str(api.MAX_WINDOW_SPAN_SECONDS) in body["error"]["message"]
+    assert body["error"]["detail"]["max_span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS
+    assert body["error"]["detail"]["span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS + 1
+
+
+def test_stats_rejects_a_multi_year_window_spelled_as_a_duration(store, config, providers) -> None:
+    status, body = api.stats(store, config, providers, {"window": ["3650d"]}, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+
+
+def test_stats_multi_year_window_answers_promptly(store, config, providers) -> None:
+    _save_fetches(store, 2000)
+    query = {
+        "from": [api._format_time(NOW - timedelta(days=5 * 365))],
+        "to": [api._format_time(NOW)],
+    }
+    started = time.perf_counter()
+    status, body = api.stats(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_stats_largest_allowed_window_answers_promptly_over_many_records(
+    store, config, providers
+) -> None:
+    """The widest accepted window, the finest bucket grid, a full store."""
+    _save_fetches(store, 3000, spacing_seconds=60)
+    query = {
+        "provider": ["test-model"],
+        "location": [NEUTRAL_LABEL],
+        "from": [api._format_time(NOW - timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS))],
+        "to": [api._format_time(NOW)],
+        "bucket": [str(api.MAX_WINDOW_SPAN_SECONDS // api.MAX_STATS_BUCKETS + 1)],
+    }
+    started = time.perf_counter()
+    status, body = api.stats(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 200
+    row = body["providers"][0]
+    assert row["stored_count"] == 3000
+    assert sum(b["stored_count"] for b in row["buckets"]) == 3000
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_stats_uses_a_count_query_and_a_bounded_record_read(store, config, providers) -> None:
+    seen: dict[str, object] = {}
+
+    class _RecordingStore(InMemoryWeatherStore):
+        def iter_fetches(self, **kwargs):
+            seen.update(kwargs)
+            return super().iter_fetches(**kwargs)
+
+    recording = _RecordingStore()
+    status, _ = api.stats(recording, config, providers, {}, NOW)
+    assert status == 200
+    assert seen["limit"] == api.MAX_STATS_FETCH_RECORDS
+
+
+def test_stats_caps_the_records_it_reads_and_says_so(store, config, providers, monkeypatch) -> None:
+    monkeypatch.setattr(api, "MAX_STATS_FETCH_RECORDS", 3)
+    _save_fetches(store, 10, spacing_seconds=60)
+    query = {"provider": ["test-model"], "location": [NEUTRAL_LABEL], "window": ["24h"]}
+    status, body = api.stats(store, config, providers, query, NOW)
+    assert status == 200
+    row = body["providers"][0]
+    # Exact, because it comes from a count query rather than the records.
+    assert row["stored_count"] == 10
+    # Derived from the newest 3 records only.
+    assert row["ok_count"] == 3
+    truncated = next(w for w in body["warnings"] if w["code"] == "truncated")
+    assert truncated["provider"] == "test-model"
 
 
 # --- privacy: no coordinate ever leaves any route -----------------------------
@@ -617,7 +1018,7 @@ def test_forecast_points_survive_a_non_round_fetch_time(store, config, providers
                 kind="forecast",
                 values={"temperature": Measurement(value=20.0 + hour, unit="degC")},
             )
-            for hour in (0, 1, 2)
+            for hour in (1, 2, 3)
         ],
     )
     status, body = api.forecast(
@@ -630,4 +1031,4 @@ def test_forecast_points_survive_a_non_round_fetch_time(store, config, providers
     assert status == 200
     entry = body["forecasts"][0]
     assert entry["point_count"] == 3
-    assert [point["values"]["temperature"] for point in entry["points"]] == [20.0, 21.0, 22.0]
+    assert [point["values"]["temperature"] for point in entry["points"]] == [21.0, 22.0, 23.0]

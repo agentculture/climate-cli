@@ -1,10 +1,12 @@
 """Vocabulary/unit conformance suite for every registered provider adapter.
 
-``docs/weather-api.md`` sections 4 ("Vocabulary") and 4.1 ("Units") are the
-single source of truth for which variable ids and unit ids an adapter's
-``normalize()`` is allowed to emit. This suite *parses those two tables out
-of the document itself* — never a hard-coded copy in test code — so the doc
-stays authoritative and a table edit there is picked up here automatically.
+``climate.weather.vocabulary`` is the single source of truth for which
+variable ids and unit ids an adapter's ``normalize()`` is allowed to emit.
+This suite imports it rather than keeping a copy — and rather than parsing
+``docs/weather-api.md``, which it used to do: the document and the code are
+now held identical by ``tests/weather/test_vocabulary.py``, so importing the
+module is importing the document, and the *runtime* table is what the API
+actually validates against.
 
 For every adapter returned by ``climate.weather.providers.iter_providers()``,
 every ``Measurement`` in every ``Reading`` produced from that adapter's own
@@ -33,54 +35,21 @@ table unit ids, with the fixture itself in Kelvin despite requesting
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 import pytest
 
+from climate.weather import vocabulary
 from climate.weather.providers import iter_providers, provider_ids
 from tests.weather.test_rederive import _CASES
 
-DOCS_PATH = Path(__file__).resolve().parents[3] / "docs" / "weather-api.md"
+VOCABULARY = vocabulary.VARIABLES
+UNITS = vocabulary.UNITS
 
 _TEMPERATURE_MIN_DEGC = -90.0
 _TEMPERATURE_MAX_DEGC = 60.0
 
 
-def _parse_vocabulary_and_units(text: str) -> tuple[dict[str, str], set[str]]:
-    """Parse the section-4 variable table and the 4.1 unit table.
-
-    Returns ``(variable_id -> unit_id, {unit_id, ...})``. Both tables are
-    ordinary GitHub-flavoured markdown pipe tables; only backticked-id data
-    rows are matched (header and ``---`` separator rows are skipped).
-    """
-    section4 = text.split("\n## 4. Vocabulary\n", 1)[1]
-    variable_block, _, rest = section4.partition("\n### 4.1 Units\n")
-    unit_block = rest.split("\n### 4.2 Kinds\n", 1)[0]
-
-    variable_row = re.compile(r"^\|\s*`([a-zA-Z0-9_]+)`\s*\|\s*`([a-zA-Z0-9_]+)`\s*\|")
-    variables: dict[str, str] = {}
-    for line in variable_block.splitlines():
-        match = variable_row.match(line)
-        if match:
-            variables[match.group(1)] = match.group(2)
-
-    unit_row = re.compile(r"^\|\s*`([a-zA-Z0-9_]+)`\s*\|")
-    units: set[str] = set()
-    for line in unit_block.splitlines():
-        match = unit_row.match(line)
-        if match:
-            units.add(match.group(1))
-
-    return variables, units
-
-
-_DOC_TEXT = DOCS_PATH.read_text(encoding="utf-8")
-VOCABULARY, UNITS = _parse_vocabulary_and_units(_DOC_TEXT)
-
-
-def test_the_vocabulary_table_parsed_something_real() -> None:
-    """A canary against a doc heading rename silently emptying the tables."""
+def test_the_vocabulary_table_is_something_real() -> None:
+    """A canary against an empty or truncated table reaching the adapters."""
     assert VOCABULARY.get("temperature") == "degC"
     assert VOCABULARY.get("relative_humidity") == "percent"
     assert VOCABULARY.get("wind_speed") == "m_s"
@@ -110,7 +79,7 @@ def test_every_emitted_variable_id_is_in_vocabulary_or_x_prefixed(
         for variable_id in reading.values:
             assert variable_id in VOCABULARY or variable_id.startswith("x_"), (
                 f"{provider_id}: variable id {variable_id!r} is neither a vocabulary id "
-                "nor x_-prefixed (docs/weather-api.md section 4)"
+                "nor x_-prefixed (climate.weather.vocabulary / docs section 4)"
             )
 
 
@@ -123,7 +92,7 @@ def test_every_emitted_unit_id_is_in_the_unit_table(
         for variable_id, measurement in reading.values.items():
             assert measurement.unit in UNITS, (
                 f"{provider_id}: variable {variable_id!r} carries unit "
-                f"{measurement.unit!r}, which is not in docs/weather-api.md section 4.1"
+                f"{measurement.unit!r}, which is not a climate.weather.vocabulary unit id"
             )
 
 
@@ -139,7 +108,7 @@ def test_vocabulary_variables_carry_exactly_the_documented_unit(
                 continue  # an x_ variable: no fixed unit assignment to check
             assert measurement.unit == expected_unit, (
                 f"{provider_id}: vocabulary variable {variable_id!r} carries unit "
-                f"{measurement.unit!r}, but docs/weather-api.md section 4 assigns it "
+                f"{measurement.unit!r}, but climate.weather.vocabulary assigns it "
                 f"{expected_unit!r}"
             )
 
