@@ -67,3 +67,17 @@ def test_is_due_reads_expires_from_a_real_fetch_record() -> None:
     passed = _record("Thu, 01 Jan 2026 11:30:00 GMT")
     assert provider.is_due(NOW, not_yet) is False
     assert provider.is_due(NOW, passed) is True
+
+
+def test_request_spec_never_prints_a_live_secret() -> None:
+    spec = base.RequestSpec(
+        provider_id="seam-test",
+        location_label="home",
+        url="https://example.test/data?appid=s3cr3tkey&units=metric",
+        headers={"Authorization": "ApiToken t0k3nvalue"},
+    )
+    for rendered in (repr(spec), str(spec), f"{spec}"):
+        assert "s3cr3tkey" not in rendered
+        assert "t0k3nvalue" not in rendered
+    assert "s3cr3tkey" in spec.url  # the real fetch still gets the key
+    assert "s3cr3tkey" not in spec.redacted_url
