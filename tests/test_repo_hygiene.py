@@ -27,9 +27,10 @@ FIXTURES_DIR = (REPO_ROOT / "tests" / "fixtures").resolve()
 # A hard-coded coordinate literal: a lat/lon-ish keyword immediately assigned
 # (or passed) a decimal-degree float, e.g. `lat=51.4769`, `latitude: -0.0005`,
 # `LON = "34.7818"`. Deliberately keyword-anchored rather than "any float in
-# range" to avoid false positives on ports, versions, ids and quotas.
+# range" to avoid false positives on ports, versions, ids and quotas. An exact
+# zero (`lat=0.0`, `lon=0.00`) is exempt: it is a placeholder, not a place.
 _COORD_RE = re.compile(
-    r"\b(?:lat(?:itude)?|lon(?:gitude)?)\b\s*[:=]\s*[\"']?-?\d{1,3}\.\d+",
+    r"\b(?:lat(?:itude)?|lon(?:gitude)?)\b\s*[:=]\s*[\"']?-?(?!0+\.0+(?!\d))\d{1,3}\.\d+",
     re.IGNORECASE,
 )
 
@@ -127,6 +128,14 @@ def test_regex_detects_a_planted_coordinate_literal(tmp_path: Path) -> None:
     text = sample.read_text(encoding="utf-8")
     matches = [line for line in text.splitlines() if _COORD_RE.search(line)]
     assert len(matches) == 2
+
+
+def test_regex_ignores_exact_zero_placeholders() -> None:
+    """`lat=0.0` is a placeholder, not a place; `lat=0.05` is still a place."""
+    assert not _COORD_RE.search("https://example.test/p?lat=0.00&lon=0.0")
+    assert not _COORD_RE.search("latitude: -0.000")
+    assert _COORD_RE.search("lat=0.05")
+    assert _COORD_RE.search("longitude = -0.0005")
 
 
 # --- fixtures completeness ----------------------------------------------------
