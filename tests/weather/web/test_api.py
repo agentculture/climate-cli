@@ -586,3 +586,48 @@ def test_dispatch_error_envelope_shape(store, config, providers) -> None:
     error = body["error"]
     assert set(error) == {"code", "message", "status", "detail"}
     assert error["status"] == 405
+
+
+def test_forecast_points_survive_a_non_round_fetch_time(store, config, providers) -> None:
+    """Found by live validation: a real fetch happens at e.g. 19:33:37, and
+    top-of-the-hour forecast points are never a whole number of steps after
+    that, so a lead-relative step filter returned every forecast empty."""
+    top_of_hour = NOW.replace(minute=0, second=0, microsecond=0)
+    requested_at = top_of_hour - timedelta(minutes=26, seconds=23)
+    fetch_id = store.save_fetch(
+        FetchRecord(
+            provider="test-model",
+            endpoint="https://example.test/test-model",
+            location=NEUTRAL_LABEL,
+            requested_at=requested_at,
+            status=200,
+            body=b"{}",
+        )
+    )
+    store.save_readings(
+        fetch_id,
+        [
+            Reading(
+                provider="test-model",
+                source="v1/forecast/hourly",
+                model="best_match",
+                location=NEUTRAL_LABEL,
+                observed_at=top_of_hour + timedelta(hours=hour),
+                requested_at=requested_at,
+                kind="forecast",
+                values={"temperature": Measurement(value=20.0 + hour, unit="degC")},
+            )
+            for hour in (0, 1, 2)
+        ],
+    )
+    status, body = api.forecast(
+        store,
+        config,
+        providers,
+        {"location": [NEUTRAL_LABEL], "provider": ["test-model"], "horizon_hours": ["6"]},
+        NOW,
+    )
+    assert status == 200
+    entry = body["forecasts"][0]
+    assert entry["point_count"] == 3
+    assert [point["values"]["temperature"] for point in entry["points"]] == [20.0, 21.0, 22.0]

@@ -1042,13 +1042,23 @@ def _build_forecast_entry(
     sources: set[str] = set()
     models: set[Any] = set()
     for variable, points in group["points_by_variable"].items():
+        in_horizon = [p for p in points if issued_at <= p.observed_at <= horizon_end]
+        # Thin to the step on the WALL-CLOCK grid, not relative to
+        # ``issued_at``: a real fetch happens at e.g. 19:33:37, so no
+        # top-of-the-hour forecast point is ever a whole number of steps after
+        # it (found live: every forecast came back with 0 points). A series
+        # that sits off the grid entirely is thinned from its own first point
+        # instead, so the filter can never silently empty it.
+        kept = [p for p in in_horizon if int(p.observed_at.timestamp()) % step_seconds == 0]
+        if not kept and in_horizon:
+            anchor = min(p.observed_at for p in in_horizon)
+            kept = [
+                p
+                for p in in_horizon
+                if int((p.observed_at - anchor).total_seconds()) % step_seconds == 0
+            ]
         lookup[variable] = {}
-        for point in points:
-            if not (issued_at <= point.observed_at <= horizon_end):
-                continue
-            lead = int((point.observed_at - issued_at).total_seconds())
-            if lead % step_seconds != 0:
-                continue
+        for point in kept:
             lookup[variable][point.observed_at] = point.value
             valid_ats.add(point.observed_at)
             sources.add(point.source)
