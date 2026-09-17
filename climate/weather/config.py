@@ -63,9 +63,15 @@ class ProviderSettings:
 
     provider_id: str
     enabled: bool = True
-    interval_seconds: int = 300
+    # None means "use the provider adapter's own default interval".
+    interval_seconds: int | None = None
     request_params: dict = field(default_factory=dict)
     quota: Quota = field(default_factory=Quota)
+
+    @property
+    def params(self) -> dict:
+        """Alias matching ``providers.base.ProviderSettingsLike.params``."""
+        return self.request_params
 
 
 @dataclass(frozen=True)
@@ -105,6 +111,11 @@ def resolve_config_path(path: str | Path | None = None) -> Path:
     return default_config_path()
 
 
+# Used only for the config-level quota estimate when the user set no interval;
+# the tracker re-validates against each adapter's real default at startup.
+_FALLBACK_INTERVAL_SECONDS = 300
+
+
 def _validate_quota(locations: dict[str, Location], providers: dict[str, ProviderSettings]) -> None:
     """Reject a configuration whose demand outruns any provider's quota."""
     location_count = len(locations)
@@ -114,7 +125,7 @@ def _validate_quota(locations: dict[str, Location], providers: dict[str, Provide
         quota = settings.quota
         if quota.calls_per_day is None:
             continue
-        interval = max(1, int(settings.interval_seconds))
+        interval = max(1, int(settings.interval_seconds or _FALLBACK_INTERVAL_SECONDS))
         ticks_per_day = _SECONDS_PER_DAY / interval
         requests_per_day = location_count * ticks_per_day
         if requests_per_day > quota.calls_per_day:
@@ -148,7 +159,9 @@ def _parse_provider(provider_id: str, raw: dict) -> ProviderSettings:
     return ProviderSettings(
         provider_id=provider_id,
         enabled=bool(raw.get("enabled", True)),
-        interval_seconds=int(raw.get("interval_seconds", 300)),
+        interval_seconds=(
+            int(raw["interval_seconds"]) if raw.get("interval_seconds") is not None else None
+        ),
         request_params=dict(raw.get("request_params") or {}),
         quota=Quota(calls_per_day=quota_raw.get("calls_per_day")),
     )

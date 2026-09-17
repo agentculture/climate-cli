@@ -470,7 +470,11 @@ class WeatherProvider(ABC):
             return False
 
         if self.freshness is FreshnessStrategy.HTTP_EXPIRES:
-            expires = _header_date(getattr(last_fetch, "headers", None), "Expires")
+            # The store's FetchRecord names them ``cache_headers``.
+            headers = getattr(last_fetch, "cache_headers", None)
+            if headers is None:
+                headers = getattr(last_fetch, "headers", None)
+            expires = _header_date(headers, "Expires")
             if expires is not None:
                 return _as_utc(now) >= expires
         return True
