@@ -1,0 +1,23 @@
+# Keep the build context small and avoid leaking secrets/dev artifacts
+# into the image.
+.git
+.github
+.venv
+venv
+env
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+.eidetic
+.devague
+docs
+tests
+docker/weather.env
+*.env
+.env
+CHANGELOG.md

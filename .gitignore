@@ -150,6 +150,10 @@ activemq-data/
 # Environments
 .env
 .envrc
+
+# Weather-tracking compose secrets (docker/weather.env.example is checked
+# in as a placeholder-only template; the real file is gitignored).
+docker/weather.env
 .venv
 env/
 venv/
