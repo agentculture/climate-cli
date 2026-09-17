@@ -23,7 +23,10 @@ Collaborators (all constructor arguments):
 ``clock`` / ``sleep`` / ``rng``
     Time, waiting and jitter, injected for tests.
 ``env``
-    The environment mapping consulted for credential availability.
+    The environment mapping consulted for credential availability — and
+    handed to :meth:`~climate.weather.providers.base.WeatherProvider.build_requests`
+    as ``env=`` (for adapters whose signature accepts it), so the key that
+    decided "enabled" is the key that builds the request.
 
 What one :meth:`Scheduler.tick` does, in order:
 
@@ -57,6 +60,7 @@ are never backfilled — a missed tick is an honest gap (spec ``h24``).
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 import random
@@ -132,6 +136,12 @@ STATUS_PROVIDER_ERROR = "provider-error"
 NO_LEASE_REASON = "another tracker holds the fetch lease"
 
 _TIMEOUT_MARKERS = ("timed out", "timeout")
+
+#: Parameter kinds an ``env=`` keyword argument can bind to.
+_ENV_KEYWORD_KINDS = (
+    inspect.Parameter.KEYWORD_ONLY,
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+)
 
 
 # --- collaborator protocols -----------------------------------------------
@@ -290,45 +300,94 @@ def validate(config: WeatherConfig, providers: Iterable[WeatherProvider]) -> Non
     default/minimum refresh, or when the demand across all configured
     locations exceeds the provider's declared :class:`Quota`.
 
-    Disabled providers are not checked: turning one off is always valid.
+    Quota demand counts *requests*, not locations: each location contributes
+    :meth:`~climate.weather.providers.base.WeatherProvider.requests_per_tick`
+    calls, which is ``1`` by default and more for an adapter that fans out
+    over stations. Disabled providers are not checked: turning one off is
+    always valid.
     """
     location_count = len(config.locations)
     for provider in providers:
         settings = config.providers.get(provider.id)
         if settings is not None and not settings.enabled:
             continue
-        configured = getattr(settings, "interval_seconds", None)
-        minimum = int(provider.default_interval_seconds or 0)
-        if configured and minimum and int(configured) < minimum:
-            raise CliError(
-                code=EXIT_ENV_ERROR,
-                message=(
-                    f"provider '{provider.id}' is configured to poll every "
-                    f"{int(configured)}s, faster than its minimum refresh of {minimum}s"
-                ),
-                remediation=(
-                    f"raise '{provider.id}' interval_seconds to at least {minimum} "
-                    "in the weather config file"
-                ),
+        _check_interval(provider, settings)
+        _check_quota(provider, settings, config, location_count)
+
+
+def _check_interval(provider: WeatherProvider, settings: ProviderSettings | None) -> None:
+    """Reject a configured interval faster than the adapter's own minimum."""
+    configured = getattr(settings, "interval_seconds", None)
+    minimum = int(provider.default_interval_seconds or 0)
+    if not (configured and minimum and int(configured) < minimum):
+        return
+    raise CliError(
+        code=EXIT_ENV_ERROR,
+        message=(
+            f"provider '{provider.id}' is configured to poll every "
+            f"{int(configured)}s, faster than its minimum refresh of {minimum}s"
+        ),
+        remediation=(
+            f"raise '{provider.id}' interval_seconds to at least {minimum} "
+            "in the weather config file"
+        ),
+    )
+
+
+def _check_quota(
+    provider: WeatherProvider,
+    settings: ProviderSettings | None,
+    config: WeatherConfig,
+    location_count: int,
+) -> None:
+    """Reject a polling plan whose request demand exceeds the declared quota."""
+    interval = provider.interval_seconds(settings)
+    quota = provider.quota
+    if quota is None or interval <= 0 or location_count == 0:
+        return
+    requests = _requests_per_tick(provider, config, settings)
+    if quota.fits(interval, requests):
+        return
+    demand = quota.daily_calls(interval, requests)
+    raise CliError(
+        code=EXIT_ENV_ERROR,
+        message=(
+            f"provider '{provider.id}' quota exceeded: {location_count} location(s) "
+            f"at a {interval}s interval need about {demand:.0f} calls/day, "
+            f"but its declared quota is {quota.calls_per_day} calls/day"
+        ),
+        remediation=(
+            f"raise '{provider.id}' interval_seconds, remove a location, or "
+            f"disable '{provider.id}' in the weather config file"
+        ),
+    )
+
+
+def _requests_per_tick(
+    provider: WeatherProvider,
+    config: WeatherConfig,
+    settings: ProviderSettings | None,
+) -> int:
+    """Total requests one due tick issues across every configured location.
+
+    Equal to the location count for an adapter that keeps the default cost
+    of one request per location.
+    """
+    hook = getattr(provider, "requests_per_tick", None)
+    if not callable(hook):
+        return len(config.locations)
+    total = 0
+    for label in sorted(config.locations):
+        location = config.locations[label]
+        try:
+            cost = int(hook(location, settings))
+        except Exception as exc:  # pragma: no cover - defensive
+            LOGGER.warning(
+                "requests_per_tick failed for %s; counting one request: %s", provider.id, exc
             )
-        interval = provider.interval_seconds(settings)
-        quota = provider.quota
-        if quota is None or interval <= 0 or location_count == 0:
-            continue
-        if not quota.fits(interval, location_count):
-            demand = quota.daily_calls(interval, location_count)
-            raise CliError(
-                code=EXIT_ENV_ERROR,
-                message=(
-                    f"provider '{provider.id}' quota exceeded: {location_count} location(s) "
-                    f"at a {interval}s interval need about {demand:.0f} calls/day, "
-                    f"but its declared quota is {quota.calls_per_day} calls/day"
-                ),
-                remediation=(
-                    f"raise '{provider.id}' interval_seconds, remove a location, or "
-                    f"disable '{provider.id}' in the weather config file"
-                ),
-            )
+            cost = 1
+        total += max(cost, 1)
+    return total
 
 
 # --- the scheduler ---------------------------------------------------------
@@ -370,6 +429,10 @@ class Scheduler:
         self._jitter_seconds = float(jitter_seconds)
         self._log = logger if logger is not None else LOGGER
         self._holds_lease = False
+        # Whether each adapter class accepts the ``env`` keyword on
+        # ``build_requests``; inspected once per provider type (see
+        # :meth:`_build_requests`).
+        self._env_aware: dict[type, bool] = {}
 
     # -- lease ------------------------------------------------------------
 
@@ -481,7 +544,7 @@ class Scheduler:
                 )
             ]
 
-        specs = list(provider.build_requests(location, settings))
+        specs = list(self._build_requests(provider, location, settings))
         if not specs:
             return [
                 FetchOutcome(
@@ -492,6 +555,32 @@ class Scheduler:
                 )
             ]
         return [self._perform(provider, spec, last_fetch) for spec in specs]
+
+    def _build_requests(
+        self,
+        provider: WeatherProvider,
+        location: Location,
+        settings: ProviderSettings | None,
+    ) -> Sequence[Any]:
+        """Ask the adapter for its requests, handing it this tick's environment.
+
+        The environment mapping that decided the provider's availability is
+        the one its request builder must read its credential from, so it is
+        passed as ``env=`` — the keyword the contract documents. An adapter
+        whose ``build_requests`` does not accept the keyword yet is called
+        with the two-argument form instead; the answer is inspected once per
+        adapter class and cached.
+        """
+        if self._accepts_env(type(provider)):
+            return provider.build_requests(location, settings, env=self._env)
+        return provider.build_requests(location, settings)
+
+    def _accepts_env(self, provider_type: type) -> bool:
+        known = self._env_aware.get(provider_type)
+        if known is None:
+            known = _build_requests_accepts_env(provider_type)
+            self._env_aware[provider_type] = known
+        return known
 
     def _is_due(
         self,
@@ -528,7 +617,7 @@ class Scheduler:
 
         record = _build_record(provider.id, spec, requested_at, result, failure)
         fetch_id = self._store.save_fetch(record)
-        stored = replace(record, id=fetch_id)
+        stored: FetchRecord = replace(record, id=fetch_id)
 
         outcome = FetchOutcome(
             provider=provider.id,
@@ -576,7 +665,8 @@ class Scheduler:
             if not readings:
                 return outcome
             ids = self._store.save_readings(stored.id, readings)
-            return replace(outcome, reading_count=len(ids))
+            counted: FetchOutcome = replace(outcome, reading_count=len(ids))
+            return counted
         except Exception as exc:
             self._log.warning(
                 "normalize failed for %s/%s (raw record %s kept): %s",
@@ -585,7 +675,8 @@ class Scheduler:
                 stored.id,
                 exc,
             )
-            return replace(outcome, normalize_error=f"{type(exc).__name__}: {exc}")
+            failed: FetchOutcome = replace(outcome, normalize_error=f"{type(exc).__name__}: {exc}")
+            return failed
 
     def _conditional(
         self,
@@ -723,6 +814,27 @@ def _next_boundary(moment: float, period: int) -> float:
 def _stopped(stop: Any) -> bool:
     is_set = getattr(stop, "is_set", None)
     return bool(is_set()) if callable(is_set) else False
+
+
+def _build_requests_accepts_env(provider_type: type) -> bool:
+    """Whether ``provider_type.build_requests`` takes the ``env`` keyword.
+
+    Adapters were written against the two-argument contract and are being
+    migrated one at a time, so the scheduler asks before it passes.
+    """
+    builder = getattr(provider_type, "build_requests", None)
+    if builder is None:
+        return False
+    try:
+        parameters = inspect.signature(builder).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    for parameter in parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "env" and parameter.kind in _ENV_KEYWORD_KINDS:
+            return True
+    return False
 
 
 def _provider_error(provider_id: str, location: str, exc: BaseException) -> FetchOutcome:

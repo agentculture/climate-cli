@@ -350,6 +350,14 @@ class WeatherProvider(ABC):
     has a working default for all three freshness strategies; override it
     only when a provider needs something the default cannot express.
 
+    Two more hooks have defaults an adapter rarely needs to touch:
+    :meth:`credential` reads this provider's key out of the environment
+    mapping it is given (the one :meth:`availability` was resolved against,
+    and the one :meth:`build_requests` receives as ``env``), and
+    :meth:`requests_per_tick` declares how many HTTP requests one due tick
+    issues for one location — override it when the adapter fans out over
+    stations, so startup quota validation counts what will really be sent.
+
     Subclasses live in their own module under
     :mod:`climate.weather.providers` and are discovered automatically — see
     that package's docstring. Nothing needs to be edited to add one.
@@ -369,7 +377,7 @@ class WeatherProvider(ABC):
                 licence="CC BY 4.0",
             )
 
-            def build_requests(self, location, settings=None): ...
+            def build_requests(self, location, settings=None, *, env=None): ...
             def normalize(self, fetch_record): ...
     """
 
@@ -401,6 +409,8 @@ class WeatherProvider(ABC):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> Sequence[RequestSpec]:
         """Describe the requests to issue for ``location`` on this tick.
 
@@ -408,6 +418,16 @@ class WeatherProvider(ABC):
         sequence is legitimate (nothing to ask for right now). Must not
         perform I/O and must never embed a secret in a stored field without
         redaction downstream.
+
+        ``env`` is the environment mapping the caller resolved this
+        provider's availability against; ``None`` means :data:`os.environ`.
+        An adapter that needs a credential reads it with
+        :meth:`credential` (passing ``env`` straight through) rather than
+        from :data:`os.environ` directly, so that the key which decided
+        "enabled" is the key that builds the request. The scheduler passes
+        the keyword only to adapters whose signature accepts it, so an
+        adapter that does not need a credential may keep the two-argument
+        form.
         """
         raise NotImplementedError
 
@@ -431,6 +451,39 @@ class WeatherProvider(ABC):
             return int(configured)
         return int(self.default_interval_seconds)
 
+    def credential(self, env: Mapping[str, str] | None = None) -> str | None:
+        """This provider's credential read from ``env`` (default: ``os.environ``).
+
+        The single place a secret enters an adapter: it reads
+        :attr:`AuthRequirement.env_var` from the *same* mapping
+        :meth:`availability` was resolved against, so an injected key can
+        never be declared "enabled" and then be missing when the request is
+        built. Returns ``None`` when the provider needs no credential or the
+        variable is unset or empty.
+        """
+        if not self.auth.env_var:
+            return None
+        environ = os.environ if env is None else env
+        return environ.get(self.auth.env_var) or None
+
+    def requests_per_tick(
+        self,
+        location: LocationLike,
+        settings: ProviderSettingsLike | None = None,
+    ) -> int:
+        """How many HTTP requests one due tick issues for one location.
+
+        The default is ``1`` — one location, one request. An adapter that
+        fans out (a request per selected station, a metadata call before the
+        data call) overrides this so that startup quota validation
+        (:func:`climate.weather.scheduler.validate`) counts what will really
+        be sent rather than one call per location. Pure and cheap: it must
+        not perform I/O, and it should agree with what
+        :meth:`build_requests` produces for the same arguments.
+        """
+        del location, settings
+        return 1
+
     def availability(
         self,
         settings: ProviderSettingsLike | None = None,
@@ -443,14 +496,12 @@ class WeatherProvider(ABC):
         """
         if settings is not None and not getattr(settings, "enabled", True):
             return Availability(False, "disabled in configuration")
-        environ = os.environ if env is None else env
-        if self.auth.required and self.auth.env_var:
-            if not environ.get(self.auth.env_var):
-                name = self.id or "this provider"
-                return Availability(
-                    False,
-                    f"{self.auth.env_var} is not set; set it to enable {name}",
-                )
+        if self.auth.required and self.auth.env_var and not self.credential(env):
+            name = self.id or "this provider"
+            return Availability(
+                False,
+                f"{self.auth.env_var} is not set; set it to enable {name}",
+            )
         return Availability(True, None)
 
     def is_due(

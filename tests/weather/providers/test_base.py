@@ -30,6 +30,7 @@ from climate.weather.providers.base import (
     WeatherProvider,
     validate_provider,
 )
+from tests.weather.neutral import fake_secret
 
 # --- helpers --------------------------------------------------------------
 
@@ -204,6 +205,65 @@ def test_settings_disabled_flag_wins_and_explains_itself() -> None:
     assert "configuration" in (result.reason or "")
 
 
+# --- the credential seam --------------------------------------------------
+
+
+def test_credential_reads_the_declared_variable_from_the_given_mapping() -> None:
+    provider = _provider_class(auth=AuthRequirement(required=True, env_var="CLIMATE_DEMO_KEY"))()
+    secret = fake_secret("demo-key")
+    assert provider.credential({"CLIMATE_DEMO_KEY": secret}) == secret
+
+
+def test_credential_is_none_when_the_variable_is_absent_or_empty() -> None:
+    provider = _provider_class(auth=AuthRequirement(required=True, env_var="CLIMATE_DEMO_KEY"))()
+    assert provider.credential({}) is None
+    assert provider.credential({"CLIMATE_DEMO_KEY": ""}) is None
+
+
+def test_a_keyless_provider_has_no_credential_whatever_the_environment_holds() -> None:
+    provider = _provider_class()()
+    assert provider.credential({"CLIMATE_DEMO_KEY": fake_secret("demo-key")}) is None
+
+
+def test_availability_and_credential_agree_on_the_same_mapping() -> None:
+    """The point of the seam: one mapping decides both answers."""
+    provider = _provider_class(auth=AuthRequirement(required=True, env_var="CLIMATE_DEMO_KEY"))()
+    env = {"CLIMATE_DEMO_KEY": fake_secret("demo-key")}
+    assert provider.availability(env=env).enabled is True
+    assert provider.credential(env) is not None
+    assert provider.availability(env={}).enabled is False
+    assert provider.credential({}) is None
+
+
+# --- the request-cost hook ------------------------------------------------
+
+
+def test_one_location_costs_one_request_by_default() -> None:
+    provider = _provider_class()()
+    assert provider.requests_per_tick(LOCATION) == 1
+    assert provider.requests_per_tick(LOCATION, ProviderSettings()) == 1
+
+
+def test_an_adapter_can_declare_a_higher_request_cost() -> None:
+    provider = _provider_class(
+        requests_per_tick=lambda self, location, settings=None: len(
+            (getattr(settings, "params", None) or {}).get("station_ids") or ["one"]
+        )
+    )()
+    settings = ProviderSettings(params={"station_ids": ["a", "b", "c"]})
+    assert provider.requests_per_tick(LOCATION, settings) == 3
+    assert provider.requests_per_tick(LOCATION) == 1
+
+
+def test_build_requests_accepts_the_env_keyword_in_the_contract() -> None:
+    """The scheduler calls ``build_requests(location, settings, env=...)``."""
+    import inspect
+
+    parameters = inspect.signature(WeatherProvider.build_requests).parameters
+    assert "env" in parameters
+    assert parameters["env"].default is None
+
+
 # --- is_due ---------------------------------------------------------------
 
 
@@ -336,7 +396,7 @@ _FAKE_ADAPTER = textwrap.dedent('''
     ''')
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_adapter(tmp_path: Path) -> Any:
     """Drop a fake adapter module onto the providers package search path."""
     (tmp_path / "fake_adapter.py").write_text(_FAKE_ADAPTER, encoding="utf-8")

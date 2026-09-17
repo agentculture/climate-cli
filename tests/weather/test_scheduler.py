@@ -31,7 +31,7 @@ from climate.weather.providers.base import (
     WeatherProvider,
 )
 from climate.weather.store import InMemoryWeatherStore
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
 
 START = datetime(2026, 9, 17, 12, 0, 0, tzinfo=UTC)
 
@@ -735,8 +735,9 @@ def test_validate_rejects_an_interval_below_the_provider_minimum() -> None:
     config = make_config(
         providers={"beta": ProviderSettings(provider_id="beta", interval_seconds=300)}
     )
+    providers = [BetaProvider()]
     with pytest.raises(CliError) as excinfo:
-        sched.validate(config, [BetaProvider()])
+        sched.validate(config, providers)
     assert excinfo.value.code == EXIT_ENV_ERROR
     assert "beta" in excinfo.value.message
     assert excinfo.value.remediation
@@ -756,8 +757,10 @@ def test_validate_rejects_demand_beyond_the_declared_quota() -> None:
         quota = Quota(calls_per_day=100)
 
     locations = {"home": Location("home", *NEUTRAL_POINT), "away": Location("away", *NEUTRAL_POINT)}
+    config = make_config(locations=locations)
+    providers = [Budgeted()]
     with pytest.raises(CliError) as excinfo:
-        sched.validate(make_config(locations=locations), [Budgeted()])
+        sched.validate(config, providers)
     assert "budgeted" in excinfo.value.message
     assert excinfo.value.code == EXIT_ENV_ERROR
 
@@ -771,6 +774,106 @@ def test_validate_ignores_disabled_providers() -> None:
         providers={"budgeted": ProviderSettings(provider_id="budgeted", enabled=False)}
     )
     sched.validate(config, [Budgeted()])
+
+
+def test_validate_multiplies_the_quota_demand_by_the_adapter_request_cost() -> None:
+    """One location is not always one request.
+
+    An adapter that fans out (a call per station) declares the real cost
+    through ``requests_per_tick``; validation has to count requests, not
+    locations, or a plan that blows the daily quota passes startup.
+    """
+
+    class Fanout(_Base):
+        id = "fanout"
+        default_interval_seconds = 300
+        quota = Quota(calls_per_day=300)
+        cost = 1
+
+        def requests_per_tick(self, location, settings=None):
+            return self.cost
+
+    config = make_config()  # one location; 86400/300 = 288 ticks a day
+
+    cheap = Fanout()
+    sched.validate(config, [cheap])  # 288 calls/day at one request per tick
+
+    expensive = Fanout()
+    expensive.cost = 2
+    providers = [expensive]
+    with pytest.raises(CliError) as excinfo:
+        sched.validate(config, providers)
+    assert "fanout" in excinfo.value.message
+    assert excinfo.value.code == EXIT_ENV_ERROR
+    assert "576" in excinfo.value.message
+
+
+def test_the_default_request_cost_leaves_quota_validation_unchanged() -> None:
+    class Budgeted(_Base):
+        id = "budgeted"
+        default_interval_seconds = 300
+        quota = Quota(calls_per_day=290)
+
+    # The default cost is one request per location: 288 calls/day, inside 290.
+    sched.validate(make_config(), [Budgeted()])
+
+
+# --- the credential environment -------------------------------------------
+
+
+class KeyedProvider(_Base):
+    """An adapter that needs a credential and records the env it was handed."""
+
+    id = "keyed"
+    auth = AuthRequirement(required=True, env_var="CLIMATE_KEYED_TOKEN")
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.build_envs: list[Any] = []
+
+    def build_requests(self, location, settings=None, *, env=None):
+        self.build_envs.append(env)
+        token = self.credential(env)
+        return [
+            RequestSpec(
+                provider_id=self.id,
+                location_label=location.label,
+                url=f"https://example.test/{self.id}?place={location.label}&appid={token}",
+            )
+        ]
+
+
+def test_build_requests_is_handed_the_env_availability_was_resolved_against() -> None:
+    """Regression: 'enabled' and 'has a key' must read the same mapping.
+
+    With the credential injected rather than exported, an adapter reading
+    ``os.environ`` inside ``build_requests`` was declared enabled and then
+    built a keyless request (or none at all).
+    """
+    provider = KeyedProvider()
+    token = fake_secret("keyed-token")
+    env = {provider.auth.env_var: token}
+    fetch = FakeFetch()
+    scheduler = make_scheduler(providers=[provider], fetch=fetch, env=env)
+
+    assert provider.availability(None, env).enabled is True
+
+    result = scheduler.tick()
+
+    assert [outcome.status for outcome in result.outcomes] == ["fetched"]
+    assert provider.build_envs == [env]
+    assert token in fetch.calls[0]["url"]
+
+
+def test_an_adapter_without_the_env_keyword_is_still_called_the_old_way() -> None:
+    """The keyword is optional: the six adapters migrate one at a time."""
+    provider = AlphaProvider()  # build_requests(self, location, settings=None)
+    scheduler = make_scheduler(providers=[provider], env={"UNUSED": "value"})
+
+    result = scheduler.tick()
+
+    assert [outcome.status for outcome in result.outcomes] == ["fetched"]
+    assert provider.build_calls
 
 
 # --- acceptance criteria (verbatim) ---------------------------------------
@@ -1034,11 +1137,16 @@ def test_jitter_can_be_switched_off() -> None:
     assert sleep.delays == [pytest.approx(300.0)]
 
 
-def test_the_base_tick_and_jitter_must_be_sane() -> None:
+def test_the_base_tick_must_be_positive() -> None:
+    providers = [AlphaProvider()]
     with pytest.raises(ValueError):
-        make_scheduler(providers=[AlphaProvider()], base_tick_seconds=0)
+        make_scheduler(providers=providers, base_tick_seconds=0)
+
+
+def test_the_jitter_must_not_be_negative() -> None:
+    providers = [AlphaProvider()]
     with pytest.raises(ValueError):
-        make_scheduler(providers=[AlphaProvider()], jitter_seconds=-1)
+        make_scheduler(providers=providers, jitter_seconds=-1)
 
 
 def test_a_broken_conditional_headers_helper_falls_back_to_an_unconditional_fetch() -> None:
