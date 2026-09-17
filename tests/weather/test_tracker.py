@@ -28,7 +28,9 @@ from climate.weather import config as weather_config
 from climate.weather import tracker
 from climate.weather.http import FetchResult
 from climate.weather.store import InMemoryWeatherStore
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
+
+FAKE_OPENWEATHER_KEY = fake_secret("openweather-key")
 from tests.weather.test_mongo import FakeCollection
 
 # Every provider except one keyless adapter is disabled in these fixtures so
@@ -218,7 +220,7 @@ def test_lease_is_released_when_the_run_finishes(tmp_path):
 
 
 def test_log_line_never_carries_the_openweather_style_secret(tmp_path, monkeypatch, caplog):
-    monkeypatch.setenv("CLIMATE_OPENWEATHER_API_KEY", "s3cr3t-tracker-key")
+    monkeypatch.setenv("CLIMATE_OPENWEATHER_API_KEY", FAKE_OPENWEATHER_KEY)
     data = {
         "locations": {
             NEUTRAL_LABEL: {"latitude": NEUTRAL_POINT[0], "longitude": NEUTRAL_POINT[1]},
@@ -247,7 +249,7 @@ def test_log_line_never_carries_the_openweather_style_secret(tmp_path, monkeypat
 
     assert code == EXIT_SUCCESS
     for record in caplog.records:
-        assert "s3cr3t-tracker-key" not in record.getMessage()
+        assert FAKE_OPENWEATHER_KEY not in record.getMessage()
 
 
 @pytest.mark.skipif(
