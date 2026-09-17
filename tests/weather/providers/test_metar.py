@@ -83,8 +83,8 @@ def test_metar_is_enabled_only_with_explicit_enabled_true() -> None:
 
 def test_no_stations_configured_emits_no_requests() -> None:
     provider = MetarProvider()
-    assert provider.build_requests(LOCATION, ProviderSettings(enabled=True)) == ()
-    assert provider.build_requests(LOCATION, ProviderSettings(enabled=True, params={})) == ()
+    assert list(provider.build_requests(LOCATION, ProviderSettings(enabled=True))) == []
+    assert list(provider.build_requests(LOCATION, ProviderSettings(enabled=True, params={}))) == []
 
 
 def test_configured_stations_build_one_comma_joined_request() -> None:
@@ -97,6 +97,72 @@ def test_configured_stations_build_one_comma_joined_request() -> None:
     assert spec.location_label == NEUTRAL_LABEL
     assert spec.url == "https://aviationweather.gov/api/data/metar?ids=LLBG,KJFK&format=json"
     assert spec.url.startswith("https://")
+
+
+def test_a_stations_mapping_gives_each_location_only_its_own_stations() -> None:
+    """Regression (qodo-8): stations are per location, not global.
+
+    Before this fix one global list was fetched once per configured
+    location, and every station's report was then stored under each
+    location's label. With a mapping each location asks for — and so stores
+    — only the stations listed under its own label.
+    """
+    provider = MetarProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(
+        enabled=True,
+        params={"stations": {NEUTRAL_LABEL: ["LLBG"], other.label: ["KJFK"]}},
+    )
+
+    (home_spec,) = provider.build_requests(LOCATION, settings)
+    (away_spec,) = provider.build_requests(other, settings)
+
+    assert home_spec.context["stations"] == ("LLBG",)
+    assert away_spec.context["stations"] == ("KJFK",)
+    assert "ids=LLBG&" in home_spec.url
+    assert "KJFK" not in home_spec.url
+    assert "ids=KJFK&" in away_spec.url
+    assert "LLBG" not in away_spec.url
+
+    # ... and each location only ever stores the report of its own station.
+    home_readings = provider.normalize(_fetch_record())
+    assert {r.source for r in home_readings} == {"metar/LLBG"}
+    assert {r.location for r in home_readings} == {NEUTRAL_LABEL}
+
+
+def test_a_stations_mapping_without_this_location_emits_no_request() -> None:
+    provider = MetarProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(enabled=True, params={"stations": {other.label: ["KJFK"]}})
+    assert list(provider.build_requests(LOCATION, settings)) == []
+
+
+def test_a_plain_stations_list_still_serves_every_location() -> None:
+    """The documented single-location convenience keeps working."""
+    provider = MetarProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(enabled=True, params={"stations": ["LLBG"]})
+    for location in (LOCATION, other):
+        (spec,) = provider.build_requests(location, settings)
+        assert spec.location_label == location.label
+        assert spec.context["stations"] == ("LLBG",)
+
+
+def test_metar_costs_one_request_per_location_per_tick() -> None:
+    """Its declared per-tick cost matches what build_requests really emits."""
+    provider = MetarProvider()
+    settings = ProviderSettings(enabled=True, params={"stations": ["LLBG", "KJFK"]})
+    assert provider.requests_per_tick(LOCATION, settings) == len(
+        provider.build_requests(LOCATION, settings)
+    )
+
+
+def test_build_requests_accepts_the_env_keyword_although_it_needs_no_credential() -> None:
+    provider = MetarProvider()
+    settings = ProviderSettings(enabled=True, params={"stations": ["LLBG"]})
+    assert provider.build_requests(LOCATION, settings, env={}) == provider.build_requests(
+        LOCATION, settings
+    )
 
 
 # --- normalize -----------------------------------------------------------
@@ -234,6 +300,18 @@ def test_normalize_converts_a_wind_gust_when_the_feed_reports_one() -> None:
     assert gust.value == pytest.approx(round(25 * 0.514444, 2))
     assert gust.original_value == 25
     assert gust.original_unit == "kt"
+
+
+def test_model_run_at_is_none_for_a_station_observation() -> None:
+    """qodo-14: METAR reports are measurements, not a model run.
+
+    The feed states no issue/run time, and the fetch time is never a
+    substitute for one.
+    """
+    provider = MetarProvider()
+    readings = provider.normalize(_fetch_record())
+    assert readings
+    assert all(r.model_run_at is None for r in readings)
 
 
 def test_normalize_is_pure_and_re_derivable() -> None:

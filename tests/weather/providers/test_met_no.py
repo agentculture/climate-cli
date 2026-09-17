@@ -200,6 +200,42 @@ def test_a_failed_fetch_normalizes_to_no_readings() -> None:
     assert provider.normalize(failed) == ()
 
 
+def test_model_run_at_is_the_feeds_updated_at_on_every_reading() -> None:
+    """qodo-14: ``properties.meta.updated_at`` is met-no's model issue time.
+
+    It is the provider's own statement of when this forecast was produced,
+    so it rides on every reading of the fetch — and it is never the time we
+    downloaded the response.
+    """
+    provider = MetNoProvider()
+    readings = provider.normalize(_fetch_record())
+    payload = json.loads(_BODY)
+    updated_at = datetime.fromisoformat(
+        payload["properties"]["meta"]["updated_at"].replace("Z", "+00:00")
+    )
+
+    assert readings
+    assert {r.model_run_at for r in readings} == {updated_at}
+    assert all(r.model_run_at != r.requested_at for r in readings)
+
+
+def test_model_run_at_is_none_when_the_response_states_no_updated_at() -> None:
+    provider = MetNoProvider()
+    payload = json.loads(_BODY)
+    del payload["properties"]["meta"]["updated_at"]
+    readings = provider.normalize(_fetch_record(body=json.dumps(payload).encode("utf-8")))
+
+    assert readings
+    assert all(r.model_run_at is None for r in readings)
+
+
+def test_build_requests_accepts_the_env_keyword_although_it_needs_no_credential() -> None:
+    provider = MetNoProvider()
+    assert provider.build_requests(LOCATION, ProviderSettings(), env={}) == provider.build_requests(
+        LOCATION, ProviderSettings()
+    )
+
+
 def test_normalize_treats_the_first_entry_as_the_current_model_value() -> None:
     provider = MetNoProvider()
     record = _fetch_record()

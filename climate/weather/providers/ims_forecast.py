@@ -14,6 +14,22 @@ Matching is case-insensitive and tolerant of the feed's `` - `` / `-`
 spacing variants (e.g. ``"Tel Aviv-Yafo"`` matches the feed's
 ``"Tel Aviv - Yafo"``).
 
+City selection is **per location**
+----------------------------------
+Scheduling is per configured location, so the candidate list is too.
+``params["cities"]`` accepts either shape:
+
+``{"<location label>": ["City", "Fallback", ...], ...}`` (a mapping)
+    The precise form: each location resolves only its own ordered
+    candidates, so one location's readings can never be normalized out of
+    another location's city. A configured location with no entry in the
+    mapping (or an empty one) makes **no request at all**.
+``["City", "Fallback", ...]`` (a plain list)
+    The documented single-location convenience: the same ordered candidates
+    serve every configured location. Kept so a single-location config stays
+    a one-liner; with more than one location every location would otherwise
+    store the same city's forecast, so prefer the mapping form.
+
 There is no default city anywhere in this module. With no candidates
 configured, :meth:`build_requests` makes no request at all — mirroring
 ``metar``'s "nothing configured, nothing fetched" behaviour, since a feed
@@ -47,6 +63,17 @@ stay pure/re-derivable from the one stored fetch record (spec ``h2``),
 without editing the merged store or provider contracts. See
 :func:`_candidate_cities`.
 
+Issue time
+----------
+The feed states when it was issued, in
+``Identification/IssueDateTime`` (e.g. ``"2026-09-17 17:40"``). That is the
+provider's own model issue time, so it is carried on every reading as
+:attr:`~climate.weather.store.Reading.model_run_at` — never the time this
+adapter's fetch happened. The element carries no UTC offset, so it is read
+as UTC, exactly like the per-day ``Date`` element (:func:`_parse_date`); a
+feed without the element (or with an unparseable one) leaves
+``model_run_at`` ``None`` rather than substituting the fetch time.
+
 The raw response bytes are handed to :mod:`xml.etree.ElementTree` exactly as
 received — never decoded/re-encoded by this module — so the ``ISO-8859-8``
 encoding declared in the XML prolog is what actually parses the document.
@@ -57,6 +84,7 @@ from __future__ import annotations
 import logging
 import re
 import xml.etree.ElementTree as ET  # nosec B405 - see normalize(): stdlib-only, fixed gov feed
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit
@@ -144,22 +172,30 @@ class ImsForecastProvider(WeatherProvider):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
-    ) -> tuple[RequestSpec, ...]:
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Sequence[RequestSpec]:
+        """One feed request carrying *this* location's own city candidates.
+
+        ``env`` is accepted for the contract's sake and ignored: the feed is
+        keyless, so this adapter never reads a credential.
+        """
+        del env
         params = dict(getattr(settings, "params", None) or {})
-        cities = [str(city).strip() for city in (params.get("cities") or []) if city]
+        cities = _cities_for(params.get("cities"), location.label)
         if not cities:
-            return ()
+            return []
         fragment = urlencode({"cities": ",".join(cities)})
         url = f"{_ENDPOINT}#{fragment}"
-        return (
+        return [
             RequestSpec(
                 provider_id=self.id,
                 location_label=location.label,
                 url=url,
                 purpose="isr_cities",
                 context={"cities": tuple(cities)},
-            ),
-        )
+            )
+        ]
 
     def normalize(self, fetch_record: FetchRecordLike) -> tuple[ReadingLike, ...]:
         status = getattr(fetch_record, "status", None)
@@ -198,6 +234,7 @@ class ImsForecastProvider(WeatherProvider):
 
         location_label = getattr(fetch_record, "location", "")
         requested_at = fetch_record.requested_at
+        model_run_at = _issue_datetime(root)
         readings: list[Reading] = []
         location_data = location_element.find("LocationData")
         if location_data is None:
@@ -217,6 +254,7 @@ class ImsForecastProvider(WeatherProvider):
                     location=location_label,
                     observed_at=observed_at,
                     requested_at=requested_at,
+                    model_run_at=model_run_at,
                     kind="forecast",
                     values=values,
                 )
@@ -246,9 +284,35 @@ def _candidate_cities(fetch_record: FetchRecordLike) -> tuple[str, ...]:
     return ()
 
 
+def _cities_for(configured: Any, location_label: str) -> list[str]:
+    """The ordered city candidates ``location_label`` owns, from either shape.
+
+    A mapping is per location: only this label's own entry is used, and a
+    label absent from it selects nothing (no request). A plain list is the
+    documented single-location convenience and serves every location — see
+    the module docstring.
+    """
+    if isinstance(configured, Mapping):
+        selected: Any = configured.get(location_label) or ()
+    else:
+        selected = configured or ()
+    if isinstance(selected, str):
+        selected = [selected]
+    return [str(city).strip() for city in selected if city]
+
+
 def _normalize_city_name(name: str) -> str:
-    collapsed = re.sub(r"\s*-\s*", "-", name.strip())
-    return re.sub(r"\s+", " ", collapsed).casefold()
+    """Case-fold a city name and collapse its whitespace, in linear time.
+
+    ``"Tel Aviv -  Yafo"`` and ``"tel aviv-yafo"`` both become
+    ``"tel aviv-yafo"``. Deliberately written with ``split``/``join`` rather
+    than ``re.sub(r"\\s*-\\s*", ...)``: that pattern's adjacent quantifiers
+    backtrack super-linearly on a long run of whitespace with no dash after
+    it (Sonar ``S8786``), and a feed/city name is caller-supplied text.
+    ``str.split`` scans each character once.
+    """
+    parts = [" ".join(part.split()) for part in name.split("-")]
+    return "-".join(parts).strip().casefold()
 
 
 def _match_city(root: ET.Element, candidates: tuple[str, ...]) -> tuple[str, ET.Element] | None:
@@ -266,6 +330,27 @@ def _match_city(root: ET.Element, candidates: tuple[str, ...]) -> tuple[str, ET.
         hit = by_normalized.get(_normalize_city_name(candidate))
         if hit is not None:
             return hit
+    return None
+
+
+def _issue_datetime(root: ET.Element) -> datetime | None:
+    """The feed's own issue time (``Identification/IssueDateTime``), or ``None``.
+
+    This is the provider's stated model issue time and becomes every
+    reading's :attr:`~climate.weather.store.Reading.model_run_at`. The feed
+    prints it as ``YYYY-MM-DD HH:MM`` with no UTC offset, so it is read as
+    UTC — the same reading :func:`_parse_date` gives the per-day ``Date``.
+    A feed with no such element, or one that will not parse, yields ``None``:
+    the fetch time is never substituted for a stated issue time.
+    """
+    raw = root.findtext("Identification/IssueDateTime")
+    if not raw or not raw.strip():
+        return None
+    for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+        try:
+            return datetime.strptime(raw.strip(), pattern).replace(tzinfo=UTC)
+        except ValueError:
+            continue
     return None
 
 

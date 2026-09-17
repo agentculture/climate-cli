@@ -226,6 +226,8 @@ class OpenMeteoProvider(WeatherProvider):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> Sequence[RequestSpec]:
         """One HTTPS request for ``location`` naming all four blocks.
 
@@ -233,7 +235,11 @@ class OpenMeteoProvider(WeatherProvider):
         ``settings.params``: ``forecast_hours`` (int) and ``current`` /
         ``minutely_15`` / ``hourly`` / ``daily`` (sequences of Open-Meteo
         variable names). Anything left unset keeps the AC-relevant default.
+
+        ``env`` is accepted for the contract's sake and ignored: Open-Meteo
+        is keyless, so this adapter never reads a credential.
         """
+        del env
         params = dict(getattr(settings, "params", None) or {})
         forecast_hours = int(params.get("forecast_hours", DEFAULT_FORECAST_HOURS))
         current_vars = tuple(params.get("current", DEFAULT_CURRENT_VARIABLES))
@@ -276,6 +282,12 @@ class OpenMeteoProvider(WeatherProvider):
         yields no readings. ``observed_at`` always comes from the response's
         own ``time`` fields, converted from its reported ``utc_offset_seconds``
         to UTC — never from ``fetch_record.requested_at``.
+
+        ``model_run_at`` is always ``None``: Open-Meteo's response states no
+        model issue or run time. ``generationtime_ms`` is how long the
+        *server* spent computing the answer, not when the model ran, and the
+        fetch time is not a model run time either — so nothing is
+        substituted for a provenance the provider never gave.
         """
         if getattr(fetch_record, "status", None) != 200 or not fetch_record.body:
             return ()
@@ -329,6 +341,7 @@ class OpenMeteoProvider(WeatherProvider):
             location=fetch_record.location,
             observed_at=observed_at,
             requested_at=fetch_record.requested_at,
+            model_run_at=None,
             kind="model",
             values=values,
         )
@@ -362,6 +375,7 @@ class OpenMeteoProvider(WeatherProvider):
                     location=fetch_record.location,
                     observed_at=observed_at,
                     requested_at=fetch_record.requested_at,
+                    model_run_at=None,
                     kind="forecast",
                     values=values,
                 )
@@ -416,24 +430,39 @@ def _build_values(
         original_value = raw[index] if index is not None else raw
         if original_value is None:
             continue
-        original_unit = units.get(open_meteo_name) or None
-        mapped = _VARIABLE_MAP.get(open_meteo_name)
+        mapped = _measure(open_meteo_name, original_value, units.get(open_meteo_name) or None)
         if mapped is not None:
-            variable_id, unit_id = mapped
-            converter = _CONVERTERS.get(open_meteo_name)
-            numeric = converter(original_value) if converter else original_value
-        else:
-            variable_id = f"x_{open_meteo_name}"
-            unit_id = _UNIT_ID_BY_DISPLAY.get(original_unit or "", "other")
-            numeric = original_value
-        try:
-            value = float(numeric)
-        except (TypeError, ValueError):
-            continue
-        values[variable_id] = Measurement(
-            value=value,
-            unit=unit_id,
-            original_value=original_value,
-            original_unit=original_unit,
-        )
+            variable_id, measurement = mapped
+            values[variable_id] = measurement
     return values
+
+
+def _measure(
+    open_meteo_name: str, original_value: Any, original_unit: str | None
+) -> tuple[str, Measurement] | None:
+    """One variable as ``(variable id, measurement)``, or ``None`` if not numeric.
+
+    A variable in :data:`_VARIABLE_MAP` takes its vocabulary id and unit
+    (through :data:`_CONVERTERS` when the value needs converting first); one
+    without is still emitted, as ``x_<name>``, with its unit resolved from
+    :data:`_UNIT_ID_BY_DISPLAY` or ``"other"``.
+    """
+    mapped = _VARIABLE_MAP.get(open_meteo_name)
+    if mapped is not None:
+        variable_id, unit_id = mapped
+        converter = _CONVERTERS.get(open_meteo_name)
+        numeric = converter(original_value) if converter else original_value
+    else:
+        variable_id = f"x_{open_meteo_name}"
+        unit_id = _UNIT_ID_BY_DISPLAY.get(original_unit or "", "other")
+        numeric = original_value
+    try:
+        value = float(numeric)
+    except (TypeError, ValueError):
+        return None
+    return variable_id, Measurement(
+        value=value,
+        unit=unit_id,
+        original_value=original_value,
+        original_unit=original_unit,
+    )

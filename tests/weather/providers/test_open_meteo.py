@@ -172,6 +172,26 @@ def test_normalize_yields_a_current_reading_kind_model() -> None:
     assert current.observed_at == datetime(2026, 9, 17, 18, 0, tzinfo=UTC)
 
 
+def test_model_run_at_is_none_because_the_payload_states_none() -> None:
+    """qodo-14: Open-Meteo states no model issue/run time, so none is claimed.
+
+    ``generationtime_ms`` is how long the *server* spent computing the
+    answer, not when the model ran, and the fetch time is not a model run
+    time either — neither may stand in for one.
+    """
+    provider = OpenMeteoProvider()
+    readings = provider.normalize(_fetch())
+    assert readings
+    assert FIXTURE_DOCUMENT.get("generationtime_ms") is not None
+    assert all(r.model_run_at is None for r in readings)
+    assert all(r.requested_at == REQUESTED_AT for r in readings)
+
+
+def test_build_requests_accepts_the_env_keyword_although_it_needs_no_credential(location) -> None:
+    provider = OpenMeteoProvider()
+    assert provider.build_requests(location, None, env={}) == provider.build_requests(location)
+
+
 def test_normalize_current_reading_carries_normalized_units() -> None:
     provider = OpenMeteoProvider()
     readings = provider.normalize(_fetch())
