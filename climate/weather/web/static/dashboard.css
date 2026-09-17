@@ -113,11 +113,20 @@
 
 /* ---------- controls ---------- */
 
+/* A native `fieldset` rather than a div with `role="group"`: the grouping is
+   then real for every assistive technology, including the ones that ignore
+   ARIA. The UA's own chrome is removed so the flex row renders exactly as it
+   did, and the legend is the group's name, visually hidden because each
+   control already carries its own visible label. */
 .controls {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 0.9rem;
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
 }
 
 .control {
@@ -225,10 +234,14 @@
 /* Seven groups never divide evenly, so the grid is pinned rather than
    auto-fitted: four then three reads as a deliberate block, where
    auto-fit leaves one orphan tile on a line of its own. */
+/* A real `ul` of `li` tiles rather than ARIA list roles: the grid layout is
+   unchanged, the marker is dropped, and `ul`'s margin and padding are
+   already zeroed by tokens.css. */
 .tiles {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
   gap: var(--grid-gap);
+  list-style: none;
 }
 
 @media (min-width: 46rem) {

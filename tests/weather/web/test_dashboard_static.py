@@ -171,6 +171,89 @@ def test_the_dashboard_only_uses_documented_query_parameters() -> None:
         assert f"| `{name}` |" in contract, f"app.js sends undocumented parameter {name}"
 
 
+# --- one refresh owns the page ------------------------------------------------
+
+
+def _app_js() -> str:
+    return _read(STATIC_ROOT / "js" / "app.js")
+
+
+def test_every_request_of_a_refresh_carries_the_refresh_signal() -> None:
+    """Regression: the three shape reads ran without the abort signal.
+
+    ``refresh()`` aborts the previous controller, so any request that does
+    not carry the new controller's signal outlives the refresh that started
+    it and can land after a newer one (Qodo 16).
+    """
+    app_js = _app_js()
+    assert "async function loadShape(signal)" in app_js
+    assert "await loadShape(controller.signal)" in app_js
+    shape_body = app_js.split("async function loadShape(signal)", 1)[1].split("\n}", 1)[0]
+    for route in ("health", "providers", "locations"):
+        assert f'get("{route}", null, {{ signal }})' in shape_body, f"{route} read has no signal"
+
+
+def test_a_superseded_refresh_cannot_touch_the_page() -> None:
+    """State, drawing, the error banner and busy are all guarded."""
+    app_js = _app_js()
+    assert "const isCurrent = () => state.inFlight === controller;" in app_js
+    refresh_body = app_js.split("async function refresh()", 1)[1].split("\n}\n", 1)[0]
+    # after each await, and before the error banner and the busy reset
+    assert refresh_body.count("if (!isCurrent()) return;") == 2
+    assert "if (isAbort(error) || !isCurrent()) return;" in refresh_body
+    assert "if (isCurrent()) {" in refresh_body
+
+
+def test_an_aborted_request_never_becomes_an_error_state() -> None:
+    api_js = _read(STATIC_ROOT / "js" / "api.js")
+    assert 'if (cause?.name === "AbortError") throw cause;' in api_js
+    assert 'return error?.name === "AbortError";' in _app_js()
+
+
+# --- the seam at now ----------------------------------------------------------
+
+
+def test_forecast_points_before_now_are_dropped_before_the_chart_sees_them() -> None:
+    """Regression: a forecast valid in the past spilled over the history.
+
+    ``futureSeries`` is scaled through the future band, whose domain starts
+    at now, so a point with an earlier ``valid_at`` was extrapolated left
+    across the seam (Qodo 15).
+    """
+    app_js = _app_js()
+    assert "function futureSeries(body, variable, colorOf, titleOf, now)" in app_js
+    body = app_js.split("function futureSeries(", 1)[1].split("\n}", 1)[0]
+    assert "const notBefore = now.getTime();" in body
+    assert ".filter((point) => point.t?.getTime() >= notBefore)" in body
+    assert "futureSeries(forecast, state.variable, colorOf, titleOf, now)" in app_js
+
+
+def test_series_drawing_clips_to_both_domain_bounds() -> None:
+    """A point outside its band's pixel domain is dropped, either side."""
+    chart_js = _read(STATIC_ROOT / "js" / "chart.js")
+    assert "function drawSeries(svg, layout, series, { scale, clipFrom, clipTo })" in chart_js
+    assert ".filter(([px]) => px >= clipFrom - EDGE_SLACK && px <= clipTo + EDGE_SLACK)" in chart_js
+    band = chart_js.split("function drawAllSeries(", 1)[1].split("\n}", 1)[0]
+    assert "clipFrom: layout.plotLeft" in band, "past band has no lower bound"
+    assert "clipFrom: layout.futureStart" in band, "future band has no lower bound"
+
+
+# --- native elements, not ARIA roles ------------------------------------------
+
+
+def test_the_page_uses_native_grouping_elements_not_list_or_group_roles() -> None:
+    """Web:S6819 — a real `fieldset` and a real `ul` carry further than ARIA."""
+    html = _read(STATIC_ROOT / "index.html")
+    assert 'role="group"' not in html
+    assert 'role="list"' not in html
+    assert '<fieldset class="controls">' in html
+    assert '<legend class="sr-only">What the page shows</legend>' in html
+    assert '<ul class="tiles" id="tiles"></ul>' in html
+    panels_js = _read(STATIC_ROOT / "js" / "panels.js")
+    assert 'role="listitem"' not in panels_js
+    assert 'document.createElement("li")' in panels_js
+
+
 # --- privacy ------------------------------------------------------------------
 
 #: The repo-hygiene scan's keyword-anchored coordinate pattern, reused here.

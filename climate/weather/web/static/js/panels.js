@@ -67,8 +67,8 @@ const KIND_RANK = { observation: 0, model: 1, forecast: 2 };
 export function pickValue(readings, variableId) {
   let best = null;
   for (const reading of readings || []) {
-    const value = reading.values && reading.values[variableId];
-    if (!value || value.value === null || value.value === undefined) continue;
+    const value = reading.values?.[variableId];
+    if (value?.value === null || value?.value === undefined) continue;
     const candidate = { ...value, provider: reading.provider, readingKind: reading.kind };
     if (!best) {
       best = candidate;
@@ -144,105 +144,131 @@ function arrow(degrees) {
   return svg;
 }
 
+/** The provider that actually measured a value, not the one that served it. */
+function sourceOf(value) {
+  return value.provenance?.provider ?? value.provider;
+}
+
+/** The first of a group's primary variables that any provider reports. */
+function pickPrimary(readings, group) {
+  for (const variableId of group.primary) {
+    const chosen = pickValue(readings, variableId);
+    if (chosen) return { chosen, chosenVariable: variableId };
+  }
+  return { chosen: null, chosenVariable: null };
+}
+
+/** The wind rose that rides alongside the figure, when the group has one. */
+function directionNode(readings, group) {
+  if (!group.direction) return null;
+  const direction = pickValue(readings, group.direction);
+  if (!direction || direction.value === null) return null;
+  const wrap = document.createElement("span");
+  wrap.className = "tile__direction";
+  wrap.appendChild(arrow(direction.value));
+  const compass = document.createElement("span");
+  compass.textContent = `${compassOf(direction.value)} ${formatValue(direction.value, "deg")}°`;
+  wrap.appendChild(compass);
+  return wrap;
+}
+
+/** The hero figure: the number, its unit, and any direction rose. */
+function tileValue(readings, group, chosen) {
+  const value = document.createElement("p");
+  value.className = "tile__value";
+  const number = document.createElement("span");
+  number.className = "tile__number";
+  number.textContent = chosen ? formatValue(chosen.value, chosen.unit) : "—";
+  value.appendChild(number);
+  if (chosen && unitOf(chosen.unit)) {
+    const unit = document.createElement("span");
+    unit.className = "tile__unit";
+    unit.textContent = unitOf(chosen.unit);
+    value.appendChild(unit);
+  }
+  const direction = directionNode(readings, group);
+  if (direction) value.appendChild(direction);
+  return value;
+}
+
+/** The secondary readings under the figure, or `null` when there are none. */
+function tileExtras(readings, group, chosenVariable) {
+  const extras = document.createElement("ul");
+  extras.className = "tile__extras";
+  for (const variableId of group.extras) {
+    if (variableId === chosenVariable) continue;
+    const extra = pickValue(readings, variableId);
+    if (!extra || extra.value === null) continue;
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = labelOf(variableId);
+    const reading = document.createElement("b");
+    reading.textContent = `${formatValue(extra.value, extra.unit)}${unitOf(extra.unit)}`;
+    item.appendChild(name);
+    item.appendChild(reading);
+    extras.appendChild(item);
+  }
+  return extras.childElementCount ? extras : null;
+}
+
+/** The provenance line: who measured it, what kind of value, how old. */
+function tileMeta(chosen, { colorOf, providerTitleOf, hasStore }) {
+  const meta = document.createElement("p");
+  meta.className = "tile__meta";
+  if (!chosen) {
+    const waiting = document.createElement("span");
+    waiting.className = "tile__waiting";
+    waiting.textContent = hasStore ? "No provider reports this" : "Waiting for the first fetch";
+    meta.appendChild(waiting);
+    return meta;
+  }
+
+  const source = document.createElement("span");
+  source.className = "tile__source";
+  source.appendChild(providerKey(colorOf(sourceOf(chosen))));
+  source.appendChild(document.createTextNode(providerTitleOf(sourceOf(chosen))));
+  meta.appendChild(source);
+
+  const kind = document.createElement("span");
+  kind.className = `tile__kind tile__kind--${chosen.kind}`;
+  kind.textContent = KIND_LABEL[chosen.kind] || chosen.kind;
+  meta.appendChild(kind);
+
+  const age = document.createElement("span");
+  age.className = "tile__age";
+  age.textContent = formatAge(chosen.age_seconds);
+  meta.appendChild(age);
+
+  if (chosen.stale) meta.appendChild(chip("warning", "Stale"));
+  return meta;
+}
+
+function tileStateClass(chosen) {
+  if (!chosen) return " tile--empty";
+  return chosen.stale ? " tile--stale" : "";
+}
+
+/** One tile of the now band. */
+function renderTile(group, { readings, colorOf, providerTitleOf, hasStore }) {
+  const { chosen, chosenVariable } = pickPrimary(readings, group);
+  const tile = document.createElement("li");
+  tile.className = `tile${tileStateClass(chosen)}`;
+
+  const heading = document.createElement("h3");
+  heading.textContent = group.title;
+  tile.appendChild(heading);
+  tile.appendChild(tileValue(readings, group, chosen));
+  const extras = tileExtras(readings, group, chosenVariable);
+  if (extras) tile.appendChild(extras);
+  tile.appendChild(tileMeta(chosen, { colorOf, providerTitleOf, hasStore }));
+  return tile;
+}
+
 /** Render the now band. */
 export function renderTiles(container, { readings, colorOf, providerTitleOf, hasStore }) {
   container.textContent = "";
   for (const group of TILE_GROUPS) {
-    const tile = document.createElement("article");
-    tile.className = "tile";
-    tile.setAttribute("role", "listitem");
-
-    const heading = document.createElement("h3");
-    heading.textContent = group.title;
-    tile.appendChild(heading);
-
-    let chosen = null;
-    let chosenVariable = null;
-    for (const variableId of group.primary) {
-      chosen = pickValue(readings, variableId);
-      if (chosen) {
-        chosenVariable = variableId;
-        break;
-      }
-    }
-
-    const value = document.createElement("p");
-    value.className = "tile__value";
-    const number = document.createElement("span");
-    number.className = "tile__number";
-    number.textContent = chosen ? formatValue(chosen.value, chosen.unit) : "—";
-    value.appendChild(number);
-    if (chosen && unitOf(chosen.unit)) {
-      const unit = document.createElement("span");
-      unit.className = "tile__unit";
-      unit.textContent = unitOf(chosen.unit);
-      value.appendChild(unit);
-    }
-    if (group.direction) {
-      const direction = pickValue(readings, group.direction);
-      if (direction && direction.value !== null) {
-        const wrap = document.createElement("span");
-        wrap.className = "tile__direction";
-        wrap.appendChild(arrow(direction.value));
-        const compass = document.createElement("span");
-        compass.textContent = `${compassOf(direction.value)} ${formatValue(direction.value, "deg")}°`;
-        wrap.appendChild(compass);
-        value.appendChild(wrap);
-      }
-    }
-    tile.appendChild(value);
-
-    const extras = document.createElement("ul");
-    extras.className = "tile__extras";
-    for (const variableId of group.extras) {
-      if (variableId === chosenVariable) continue;
-      const extra = pickValue(readings, variableId);
-      if (!extra || extra.value === null) continue;
-      const item = document.createElement("li");
-      const name = document.createElement("span");
-      name.textContent = labelOf(variableId);
-      const reading = document.createElement("b");
-      reading.textContent = `${formatValue(extra.value, extra.unit)}${unitOf(extra.unit)}`;
-      item.appendChild(name);
-      item.appendChild(reading);
-      extras.appendChild(item);
-    }
-    if (extras.childElementCount) tile.appendChild(extras);
-
-    const meta = document.createElement("p");
-    meta.className = "tile__meta";
-    if (chosen) {
-      const source = document.createElement("span");
-      source.className = "tile__source";
-      source.appendChild(providerKey(colorOf(chosen.provenance ? chosen.provenance.provider : chosen.provider)));
-      source.appendChild(
-        document.createTextNode(providerTitleOf(chosen.provenance ? chosen.provenance.provider : chosen.provider)),
-      );
-      meta.appendChild(source);
-
-      const kind = document.createElement("span");
-      kind.className = `tile__kind tile__kind--${chosen.kind}`;
-      kind.textContent = KIND_LABEL[chosen.kind] || chosen.kind;
-      meta.appendChild(kind);
-
-      const age = document.createElement("span");
-      age.className = "tile__age";
-      age.textContent = formatAge(chosen.age_seconds);
-      meta.appendChild(age);
-
-      if (chosen.stale) {
-        tile.classList.add("tile--stale");
-        meta.appendChild(chip("warning", "Stale"));
-      }
-    } else {
-      tile.classList.add("tile--empty");
-      const waiting = document.createElement("span");
-      waiting.className = "tile__waiting";
-      waiting.textContent = hasStore ? "No provider reports this" : "Waiting for the first fetch";
-      meta.appendChild(waiting);
-    }
-    tile.appendChild(meta);
-    container.appendChild(tile);
+    container.appendChild(renderTile(group, { readings, colorOf, providerTitleOf, hasStore }));
   }
 }
 
@@ -320,18 +346,16 @@ export function renderHealth(container, { rows, colorOf, providerTitleOf }) {
  */
 export function healthRows({ stats, health, providers, location }) {
   const statRows = new Map();
-  for (const row of (stats && stats.providers) || []) {
+  for (const row of stats?.providers || []) {
     if (row.location !== null && row.location !== location) continue;
     statRows.set(row.provider, row);
   }
-  const healthRowsById = new Map(
-    ((health && health.providers) || []).map((row) => [row.provider, row]),
-  );
+  const healthRowsById = new Map((health?.providers || []).map((row) => [row.provider, row]));
   const disabledReason = new Map(
-    ((providers && providers.providers) || []).map((row) => [row.provider, row.enabled_reason]),
+    (providers?.providers || []).map((row) => [row.provider, row.enabled_reason]),
   );
 
-  return ((providers && providers.providers) || []).map((row) => {
+  return (providers?.providers || []).map((row) => {
     const stat = statRows.get(row.provider) || {};
     const live = healthRowsById.get(row.provider) || {};
     const errors =
@@ -384,7 +408,7 @@ export function healthRows({ stats, health, providers, location }) {
 /** Credits for every provider whose data is on screen. */
 export function renderCredits(container, { providers, onScreen }) {
   container.textContent = "";
-  const rows = ((providers && providers.providers) || []).filter((row) => onScreen.has(row.provider));
+  const rows = (providers?.providers || []).filter((row) => onScreen.has(row.provider));
   if (!rows.length) {
     container.appendChild(emptyNote("Nothing on screen yet, so nothing to credit."));
     return;
