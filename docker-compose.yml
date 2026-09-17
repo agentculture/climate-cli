@@ -1,0 +1,127 @@
+# Weather-tracking service — mongo + tracker + web, built from one image.
+#
+# Precedent: /home/spark/git/data-refinery-cli/docker-compose.yml (house
+# style for the mongo service: mongo:8.0, named volume, unless-stopped,
+# mongosh ping healthcheck). Differences deliberately made for this project:
+#
+#   - weather-mongodb publishes NO host port by default. tracker and web
+#     reach it over the compose network only, at
+#     mongodb://weather-mongodb:27017/weather (see docker/weather.env.example).
+#   - An OPTIONAL debug publish of mongo on host port 27020 is available but
+#     OFF by default, via a separate override file, docker-compose.debug.yml,
+#     applied on top of this one:
+#       docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d weather-mongodb
+#     That override adds ONLY a `ports:` entry to the EXISTING weather-mongodb
+#     service below — never a second mongod process. A second process
+#     (e.g. via compose's `extends:`) sharing the same weather-mongodb-data
+#     volume would give two independent mongod instances concurrent write
+#     access to the same database files, risking corruption.
+#   - Every service ships json-file logging with rotation (max-size,
+#     max-file) so an unattended long-running stack doesn't fill the disk.
+#   - Secrets and the host config directory are supplied via
+#     docker/weather.env (gitignored — NOT the pattern already ignored by
+#     this repo's `.env`/`.envrc` rules, so `.gitignore` gets one line
+#     added for it). See docker/weather.env.example for every variable,
+#     documented with placeholder values only.
+#   - The user's location config is private data and lives OUTSIDE the
+#     repo. It defaults to ${HOME}/.config/climate-cli — matching the
+#     config task's own default of $XDG_CONFIG_HOME/climate-cli
+#     (~/.config/climate-cli) — and is bind-mounted read-only into both
+#     tracker and web at /app/config. CLIMATE_WEATHER_CONFIG_PATH tells
+#     each service where inside that mount to read weather.json from.
+#
+# Bring the stack up (once the `weather` extra + tracker/web modules exist —
+# out of scope for this task):
+#   docker compose --env-file docker/weather.env up -d
+name: climate-weather
+
+services:
+  weather-mongodb:
+    image: mongo:8.0
+    container_name: weather-mongodb
+    restart: unless-stopped
+    # No `ports:` by default — reachable only on the compose network as
+    # weather-mongodb:27017. docker-compose.debug.yml adds a host publish.
+    volumes:
+      - weather-mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  weather-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: climate-weather-tracker
+    container_name: weather-tracker
+    command: ["python", "-m", "climate.weather.tracker"]
+    restart: unless-stopped
+    env_file:
+      - docker/weather.env
+    environment:
+      CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
+    volumes:
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
+    depends_on:
+      weather-mongodb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  weather-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: climate-weather-web
+    container_name: weather-web
+    command: ["python", "-m", "climate.weather.web"]
+    restart: unless-stopped
+    # No `env_file:` here on purpose — the web process never talks to a
+    # provider, so it must never receive CLIMATE_OPENWEATHER_API_KEY or
+    # CLIMATE_IMS_API_TOKEN (those go only to weather-tracker below). Its
+    # environment is listed explicitly, with only what it reads:
+    # climate/weather/web/__main__.py resolves the bind/port from
+    # CLIMATE_WEB_BIND/CLIMATE_WEB_PORT and the config path from
+    # CLIMATE_WEATHER_CONFIG_PATH; the lazy climate.weather.mongo import it
+    # calls into resolves WEATHER_MONGO_URI, same default as the tracker.
+    environment:
+      WEATHER_MONGO_URI: mongodb://weather-mongodb:27017/weather
+      CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
+      # INSIDE the container the service must listen on all interfaces and on
+      # the mapped target port, or docker's port forward cannot reach it
+      # (found live: a loopback listener gives "connection reset by peer").
+      # Exposure is decided by the HOST side of the mapping below, which stays
+      # loopback unless CLIMATE_WEB_BIND says otherwise. These two override
+      # whatever docker/weather.env carries for the same names.
+      CLIMATE_WEB_BIND: "0.0.0.0"
+      CLIMATE_WEB_PORT: "8095"
+    volumes:
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
+    ports:
+      - "${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8095}:8095"
+    depends_on:
+      weather-mongodb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Docker-managed named volume — no bind-mount permission friction, portable
+# across hosts. Nothing in this repo destroys it — no compose teardown
+# with the flag that drops volumes, and no ad-hoc volume-removal or
+# volume-pruning command (see tests/weather/test_compose.py, which
+# enforces this by scanning tracked files for those command forms).
+volumes:
+  weather-mongodb-data:

@@ -1,0 +1,1126 @@
+{
+  "slug": "weather-tracking-service",
+  "title": "weather tracking service",
+  "frame_slug": "weather-tracking-service",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-17T18:01:51Z",
+  "updated": "2026-09-17T18:06:41Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "climate-cli tracks Tel-Aviv-area weather every 5 minutes from several free providers, keeps every response in full (current state, forecast, all stats) in a local weather-mongodb docker instance, and the climate CLI controls the tracking service and queries what it collected",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "Failed fetches (timeout, 4xx/5xx, 429) are stored as fetch records too, so a gap in the data is distinguishable from a gap in collection",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "why_it_matters",
+      "text": "The collected weather data drives the user's home AC control \u2014 every parameter counts, so no provider field is discarded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "The raw response body is persisted before any parsing or normalization runs, so a parser bug can never lose a provider field",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Every response is stored in full: all stats the provider returns (temperature, wind, precipitation, humidity, whatever is provided), and any forecast returned in the same request is kept too, even when only the 'current state' is used today",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "Forecast blocks are stored even though nothing reads them yet; the 48 h horizon is a request parameter, not a post-hoc trim of what the provider returned",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Data lands in a local 'weather-mongodb' docker MongoDB instance, following the same convention used for the other services' mongodb containers on this machine",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "Collected data survives 'stack down' and image rebuilds: it lives in the named volume and no CLI verb ever removes that volume without an explicit destructive flag",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "The climate CLI controls the tracking service (lifecycle) and provides a way to query the collected data",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "Every stack/tracker verb works from the host CLI against the containers, and exits 2 with a remediation hint when docker or the compose plugin is missing or the daemon is unreachable",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "Location scope is the Tel-Aviv area, Israel; sources are the free providers from issue 5 (ims, openweather, open-meteo, met-no); Tomorrow.io is out",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "No coordinate is hard-coded anywhere in the package: with no location configured the tracker refuses to start (exit 2) instead of defaulting to a place",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "New noun groups register via climate/cli/__init__.py _build_parser (the 'Register your own noun groups here' hook) as modules under climate/cli/_commands/, each exposing an 'overview' verb, --json on every verb, and failures raised as CliError (exit 1 user / 2 environment)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "uv run teken cli doctor . --strict still passes with the new noun groups registered",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "Every new noun/verb path gets an entry in climate/explain/catalog.py, and README's CLI table + the root explain entry (still template text: 'A clonable template for AgentCulture mesh agents') are updated to describe the weather tracker",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "Every new verb path resolves under 'climate explain', and no template boilerplate ('clonable template') remains in README, the root explain entry or the parser description",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "boundary",
+      "text": "CI (tests.yml) must stay green without network, docker, or API keys: tests use captured provider fixtures and a fake/mocked Mongo layer; the lint job's gates (black, isort, flake8, bandit -r climate, markdownlint, 'teken cli doctor . --strict') and the version-check job (every PR bumps the version + CHANGELOG) all apply to this work",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "The full test suite passes with network access and docker unavailable, and coverage stays at or above the configured 60%",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "climate doctor gains environment checks for the tracker (weather-mongodb reachable, provider credentials present, service running) in the existing {healthy, checks:[{id,passed,severity,message,remediation}]} shape",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "doctor's tracker checks run and report sensibly from a wheel install with no culture.yaml, and a stopped stack yields failed checks with remediation rather than an exception",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "Provider API keys (IMS ApiToken, OpenWeather key) never enter the repo or the public .eidetic memory store; .gitignore already excludes .env/.envrc",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "The env_file holding keys is gitignored and compose refuses nothing silently: a missing key disables only that provider and doctor reports it, and no key value appears in logs, fetch records or stored request URLs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "weather-mongodb is its own dedicated instance: image mongo:8.0, container_name weather-mongodb, named volume weather-mongodb-data, restart unless-stopped, mongosh ping healthcheck, no auth \u2014 defined in a docker-compose.yml in this repo. It publishes NO host port: only the tracker and web-service containers reach it, over the compose network. (Host ports 27017 qq, 27018 data-refinery/eidetic, 27019 jlab stay untouched; 27020 is reserved for an optional, off-by-default debug publish)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "Host port 27020 is a default, not a constant: if it is taken at 'stack up' time the verb fails with a clear message and the port is configurable",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "The tracker never reads or writes qq-mongodb, eidetic-mongo/data-refinery-mongo, or jlab-mongodb, and this work does not touch those repos or containers (including the orphaned eidetic-mongo container)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "The connection guard refuses URIs pointing at host ports 27017, 27018 and 27019 and the tracker never runs docker commands against containers it did not create",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Runtime core stays dependency-free (dependencies = []): the host CLI talks to the stack with docker compose and stdlib urllib only. pymongo and the web framework live in a [project.optional-dependencies] extra that the container image installs, lazy-imported inside the service code; service code run without the extra exits 2 (environment error) with an install hint, never an ImportError traceback",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "A plain install without the extra still runs whoami, learn, explain, overview, doctor and cli overview with zero third-party imports",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "Cadence and configuration are per provider: each provider has its own configurable poll interval, enabled flag, request parameters (e.g. forecast horizon, variables, stations) and quota, with sensible defaults in its adapter. The 5-minute tick is only the scheduler's base resolution \u2014 on each tick a provider is fetched when its own interval has elapsed AND its refresh policy allows it: met-no is Expires/Last-Modified driven with conditional GET and a mandatory identifying User-Agent; open-meteo's current block is a 900-second model slice; ims and METAR follow station cadence. Every fetch that is made is stored as-is, even when its content is unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "With recorded met-no headers as fixtures, no request is issued before Expires and the post-expiry request carries If-Modified-Since and the identifying User-Agent; a 304 is stored as a fetch record",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "Storage keeps the verbatim raw provider response per fetch (body plus fetch metadata: provider, endpoint, requested_at, HTTP status, cache headers, content hash) as the system of record, with normalized 'current' readings derived from it and re-derivable; provider/source/model and observed_at vs requested_at stay distinct per issue 5",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "Normalized readings carry provider, source, model, observed_at and requested_at, reference their raw fetch record, and IMS observed_at is corrected to true UTC from the documented always-UTC+2 quirk",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "A web service, run in docker and managed by the climate CLI, serves the collected data (latest reading first) so it can be consumed from outside this machine; it includes a beautiful human-facing web app, designed with the frontend-design plugin and verified with playwright",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "The web service is read-only over the collected data and binds to loopback by default; serving it to other machines is an explicit opt-in, because it has no authentication",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "Locations are user configuration held outside the repo (never committed, including in test fixtures, docs and public eidetic memory); multiple locations are supported, bounded by each provider's request budget",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "A repository-wide search finds no location coordinates or place configuration: test fixtures are captured for a neutral public reference point unrelated to the user, and the public eidetic store holds none",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "Output contract: markdown is the default rendering for agents and humans, --json for code; 'latest reading' is the first-class query because the AC agent controls from it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "Every query verb renders markdown by default and the same data as --json, and 'latest' reports each value's age and provider so a stale reading is never mistaken for a fresh one",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "The web app is a graph- and chart-oriented dashboard of the data we keep, with little to no prose; charts follow the dataviz skill, the visual design follows the AgentCulture look of ../org and ../culture-nodes via the frontend-design plugin, and it is verified in a real browser with the playwright MCP",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "The dashboard stays truthful with sparse data: in its first hour, or with a provider disabled, charts show explicit empty or partial states rather than interpolated or invented lines, and observations are visually distinct from model output and from forecasts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "The dashboard carries the AgentCulture design system by point-in-time extraction, the way culture-nodes does: org's site-astro/src/styles/global.css tokens copied verbatim at a pinned org commit into this repo with an ADR recording the pin; ../org and ../culture-nodes are read-only sources and are never modified or imported at build or run time",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "A check script proves the extracted tokens byte-match the pinned org commit, and neither ../org nor ../culture-nodes shows any diff after this work",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "audience",
+      "text": "Three readers on one machine: the AC-control agent (reads markdown, acts on the latest reading), code and scripts (read --json), and Ori as the human operator (reads markdown in the terminal and the dashboard in a browser)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "The AC-control agent can obtain the latest reading with one command and no prior knowledge beyond 'climate learn' / 'climate explain'",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "before_state",
+      "text": "climate-cli is a bare agent template with no weather capability; nothing records Tel-Aviv-area conditions, so the AC is controlled without measured humidity, radiation, wind or forecast context, and past conditions cannot be looked up",
+      "deferred": true,
+      "deferred_reason": "Before-state is a fact established by the scope survey (s8-s11: no sibling repo or container records weather); there is nothing to build. Deferred by the user on the agent's recommendation rather than faked with a task"
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "Nothing else on this machine already records this data \u2014 confirmed by the scope survey finding no weather collection in any sibling repo",
+      "deferred": true,
+      "deferred_reason": "Honesty condition of the deferred before-state c34; already evidenced by the scope survey, nothing to build"
+    },
+    {
+      "id": "c35",
+      "kind": "after_state",
+      "text": "One CLI stack command brings up weather-mongodb, the tracker and the web service; from then on every provider is sampled on its own refresh policy every 5 minutes, every response is kept in full, 'latest reading' answers in markdown or --json, and the dashboard charts what has been collected",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "A missed tick (stack down, host off, network out) is left as an honest gap: there is no backfill and no synthetic data",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "success_signal",
+      "text": "After 24 hours of unattended running: at least 95% of due fetches per enabled provider are stored (at most 288 per always-due provider per location), a host reboot is followed by collection resuming with no manual step, and the latest-reading query returns in under 1 second with data less than 10 minutes old for interval providers",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "The 24-hour figures are measured from the stored fetch records themselves by a CLI verb, not estimated",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "success_signal",
+      "text": "Any stored document can be traced back to its verbatim provider response: 100% of normalized readings reference a raw fetch record, and re-deriving a reading from that raw record gives the same values",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "Re-derivation is exercised by a test that rebuilds normalized readings from stored raw fixtures and compares them",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "The collection has a first-class local backup path before any S3 work: a CLI verb dumps the database (mongodump-style archive) to a host directory outside docker's volume store, and doctor warns when the newest dump is older than a configurable age",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "A dump taken from the running stack can be restored into an empty weather-mongodb and yields the same fetch-record count and content hashes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "requirement",
+      "text": "The raw response is stored as the exact bytes received (plus content-type and declared charset), not as re-serialized JSON or a BSON-converted document; any parsed copy is additional. IMS XML arrives as ISO-8859-8 and JSON re-encoding would alter float text and key order",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "The stored bytes of a fixture response hash to the same digest as the fixture file",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "Exactly one tracker fetches at a time: a lease held in weather-mongodb stops a second tracker (a host-run dev instance, a duplicated stack) from fetching, a tick that overruns is never overlapped by the next, each provider fetch has its own timeout, and tick start carries a small random jitter",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "Starting a second tracker against the same database makes it exit 2 (or idle) without issuing a single provider request",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "'latest' supports a caller-supplied maximum age: when the freshest reading for the requested provider/location is older than that, the verb exits non-zero with a distinct code and says so, so the AC agent cannot silently control from a dead tracker's last value",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "With the tracker stopped for longer than the max age, 'latest' with that option exits non-zero in both markdown and --json modes and the --json payload carries a stale flag",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "The compose project bounds its own footprint: every service sets json-file log rotation (max-size/max-file), and doctor reports database size, newest fetch age per provider and host disk headroom",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "A container that logs continuously cannot exceed its configured log cap, and doctor's size and freshness figures come from the database, not estimates",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "Coordinates sent to providers and stored are rounded to a configurable precision (default 2 decimals, about 1 km; never more than the 4 decimals MET Norway allows), and when the web service is exposed beyond loopback it identifies locations by user-chosen label only, never by coordinates",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "With exposure enabled, no API response or dashboard asset contains a latitude or longitude, and provider request URLs in fetch records carry only the rounded values",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "doctor detects version skew between the host CLI and the running tracker/web images and reports the remediation (rebuild or pull and restart)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "Running an older image against a newer CLI yields a failed doctor check naming both versions",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Issue 5's provider surface ships: a providers verb lists each provider's capabilities, auth requirement, configured quota, freshness strategy and enabled state (the issue's 'climate providers --limits'), and per-provider licence/attribution, freshness and rate-limit notes are documented",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h34",
+      "kind": "honesty",
+      "text": "Every provider adapter has a row in the providers output and a documented attribution line, checked by a test that fails when an adapter lacks either",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "The dashboard carries the attribution the data licences require (Open-Meteo CC BY 4.0, MET Norway, IMS, OpenWeather) as a compact footer \u2014 the one deliberate exception to 'little to no prose'",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h35",
+      "kind": "honesty",
+      "text": "Each provider whose data appears on screen is credited on that screen with a link to its licence or terms",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Test harness guards and captured provider fixtures",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "tests/conftest.py blocks real socket connections for the whole suite; a test that tries to connect fails with a clear message",
+        "tests/fixtures/ holds one verbatim response file per provider (open-meteo, met-no with its response headers, openweather, ims stations + latest, METAR LLBG, IMS city-forecast XML as ISO-8859-8 bytes) plus a fixtures README stating how each was obtained",
+        "fixtures for coordinate-based providers use a neutral public reference point unrelated to the user; a test scans climate/, tests/ and the docker files and fails on any latitude/longitude literal outside tests/fixtures/"
+      ],
+      "deps": [],
+      "covers": [
+        "c12",
+        "h9",
+        "h18"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns tests/conftest.py, tests/fixtures/**, tests/test_repo_hygiene.py. Keyless providers (open-meteo, met-no, aviationweather METAR, IMS XML) may be captured live once with curl for a neutral point such as the Greenwich Observatory; met-no needs an identifying User-Agent. OpenWeather and the IMS Envista API have no credentials here, so build those fixtures from the documented response shapes and say so in the fixtures README. Request open-meteo with a 48 h horizon."
+    },
+    {
+      "id": "t2",
+      "summary": "User configuration: locations, per-provider settings, coordinate rounding",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/config.py loads configuration from an XDG config path outside the repo (overridable by an env var) and returns typed settings: labelled locations, per-provider enabled flag, interval, request parameters and quota",
+        "with no location configured, loading for the tracker raises an environment error (exit 2) with a remediation hint; no default place exists anywhere in the package",
+        "coordinates are rounded to a configurable precision, default 2 decimals and never more than 4, before any other module sees them",
+        "a configuration whose locations multiplied by a provider's interval exceed that provider's quota is rejected with a message naming the provider"
+      ],
+      "deps": [],
+      "covers": [
+        "c27",
+        "c8",
+        "h6",
+        "c44"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/__init__.py, climate/weather/config.py, tests/weather/test_config.py. Use JSON for the config file (stdlib can read and write it). Secrets are NOT in this file - they come from environment variables only."
+    },
+    {
+      "id": "t3",
+      "summary": "Storage model, store interface and in-memory fake",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/store.py defines a fetch record (exact response bytes, content-type, charset, provider, endpoint with secrets redacted, location label, requested_at UTC, HTTP status, cache headers, sha256 of the bytes, error detail, schema_version) and a normalized reading (values with units and original units, provider/source/model, observed_at, requested_at, kind of observation|model|forecast, reference to its fetch record)",
+        "the stored bytes of a fixture response hash to the same digest as the fixture file, including the ISO-8859-8 XML",
+        "a failed fetch (timeout, 4xx/5xx, 429, 304) is representable and stored as a fetch record with no body loss and no reading",
+        "an in-memory store implements the same interface as the Mongo store and is what every other test uses"
+      ],
+      "deps": [],
+      "covers": [
+        "c2",
+        "h2",
+        "c40",
+        "h28",
+        "c22",
+        "h1"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/store.py, tests/weather/test_store.py. The interface must make it impossible to save a reading before its fetch record exists (save_fetch returns the id that save_readings requires)."
+    },
+    {
+      "id": "t4",
+      "summary": "HTTP fetch helper with timeouts and secret redaction",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/http.py performs a GET with a per-call timeout, custom headers and optional If-Modified-Since, returning status, headers and the exact body bytes; network errors become a result object, never an uncaught exception",
+        "a redaction function removes API keys and tokens from URLs (query string), headers and exception text; a test proves an OpenWeather-style appid value never appears in the redacted URL, the result object repr, or a log line"
+      ],
+      "deps": [],
+      "covers": [
+        "c14",
+        "h11"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/http.py, tests/weather/test_http.py. urllib only. Tests inject a fake opener; no sockets. Restrict schemes to https to keep bandit B310 quiet."
+    },
+    {
+      "id": "t5",
+      "summary": "Provider interface: capabilities, quota, refresh policy, attribution",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/providers/base.py defines the provider contract: id, capabilities, auth requirement, default interval, quota metadata, freshness strategy (interval | http-expires | station-cadence), licence/attribution text and URL, build_requests(location, settings), is_due(now, last_fetch), normalize(fetch_record)",
+        "a registry lists providers without importing any third-party module, so the host CLI can read provider metadata",
+        "a test fails if a registered provider lacks attribution text, quota metadata or a freshness strategy"
+      ],
+      "deps": [],
+      "covers": [
+        "c46",
+        "c21"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/providers/__init__.py, climate/weather/providers/base.py, tests/weather/providers/test_base.py. Adapters are added by other tasks as separate modules; the registry discovers them by an explicit list that those tasks do not need to edit - use pkgutil discovery over the providers package."
+    },
+    {
+      "id": "t6",
+      "summary": "HTTP API contract document",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "docs/weather-api.md specifies every read-only route with request parameters and example JSON: latest (per provider and location, each value with unit, observed_at, age_seconds, provenance, stale flag), series (explicit nulls for gaps, kind tag), forecasts, providers, stats (due vs stored fetch counts per provider over a window), health (tracker version, newest fetch age)",
+        "the document states that there are no write routes, that locations are identified by label only, and that coordinates never appear in any response"
+      ],
+      "deps": [],
+      "covers": [
+        "c26",
+        "c28"
+      ],
+      "instruction": "Owns docs/weather-api.md only. This is the contract the web API task, the dashboard task and the CLI query task all build against in parallel, so be exact about field names and types. Must pass markdownlint."
+    },
+    {
+      "id": "t7",
+      "summary": "AgentCulture design tokens extracted at a pinned org commit",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/web/static/tokens.css is a verbatim copy of org's site-astro/src/styles/global.css below a header comment naming the pinned commit",
+        "docs/adr/0001-culture-design-source.md records the pin, what was extracted and the re-pin procedure, following culture-nodes ADR 0001",
+        "a check script verifies byte-equality against the org checkout at the pinned commit when that checkout is present and skips cleanly when it is not; git status in ../org and ../culture-nodes is unchanged"
+      ],
+      "deps": [],
+      "covers": [
+        "c31",
+        "h21"
+      ],
+      "instruction": "Owns climate/weather/web/static/tokens.css, docs/adr/0001-culture-design-source.md, scripts/check-culture-design.py. Read ../org and ../culture-nodes only; never write there. Use git -C ../org show PIN:path to read the pinned file. Copy the categorical palette values culture-nodes uses into the ADR for the dashboard task to evaluate."
+    },
+    {
+      "id": "t8",
+      "summary": "Container image and compose project",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "docker-compose.yml defines weather-mongodb (mongo:8.0, named volume weather-mongodb-data, restart unless-stopped, mongosh ping healthcheck, NO published port by default), a tracker service and a web service built from one Dockerfile, each with restart unless-stopped and json-file log rotation (max-size and max-file)",
+        "the web service publishes on 127.0.0.1 by default with the bind address and port taken from variables; an optional mongo debug publish on host port 27020 is off by default and configurable",
+        "secrets and the config path come from a gitignored env file; docker/weather.env.example documents every variable with placeholder values only",
+        "a test parses the compose file and asserts: no host port on mongo by default, log limits on every service, the named volume, and that no command in the repo removes that volume"
+      ],
+      "deps": [],
+      "covers": [
+        "c5",
+        "h4",
+        "c15",
+        "h12",
+        "c43"
+      ],
+      "instruction": "Owns Dockerfile, docker-compose.yml, docker/weather.env.example, .dockerignore, tests/weather/test_compose.py. Base image python:3.12-slim (multi-arch; this host is aarch64). The image installs the package with its extra. Service entrypoints are 'python -m climate.weather.tracker' and 'python -m climate.weather.web' - other tasks create those modules. Compose project name: climate-weather."
+    },
+    {
+      "id": "t9",
+      "summary": "MongoDB store, connection choke-point and tracker lease",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/mongo.py exposes one connection function reading WEATHER_MONGO_URI (default mongodb://weather-mongodb:27017/weather); it refuses loopback or host addresses on ports 27017, 27018 and 27019 and mongodb+srv URIs, with exit-2 errors",
+        "pymongo is imported only inside functions; importing the module without pymongo installed succeeds, and calling it raises an environment error with the exact install command, no ImportError traceback",
+        "the Mongo store passes the same interface test-suite as the in-memory store, run against a fake client; indexes exist for (provider, location, requested_at desc)",
+        "acquire_lease/renew/release implement a single-holder lease document with expiry; a second holder cannot acquire a live lease"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c17",
+        "h13",
+        "c41"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/mongo.py, tests/weather/test_mongo.py. Model the guard on jetson-ai-lab-cli/jlab/mongo.py (read it, do not import it). Store response bodies as BSON binary, never as parsed documents. Tests use a hand-written fake collection, not a live server and not mongomock."
+    },
+    {
+      "id": "t10",
+      "summary": "open-meteo adapter",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "builds one request per location asking for current, minutely_15, hourly and daily blocks with a 48-hour horizon and the full AC-relevant variable list; horizon and variables are overridable from provider settings",
+        "normalize() yields a current reading tagged kind=model with interval 900 s provenance, plus forecast readings; the forecast block is stored and normalized even though nothing consumes it yet",
+        "quota metadata reflects the call-weight rule (variables x models / 10, minimum 1) so the budget check counts a wide request as several calls"
+      ],
+      "deps": [
+        "t1",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "c3",
+        "h3"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Use the verbatim fixture from tests/fixtures/, the HTTP helper and the provider contract; the adapter never touches the network in tests. normalize() must keep provider, source and model distinct and set observed_at from the provider's own timestamp, never from requested_at. Owns climate/weather/providers/open_meteo.py, tests/weather/providers/test_open_meteo.py."
+    },
+    {
+      "id": "t11",
+      "summary": "met-no adapter with Expires-driven refresh",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "is_due() returns false before the stored Expires of the last successful fetch and true after it; the post-expiry request carries If-Modified-Since and an identifying User-Agent built from the package version and repo URL",
+        "a 304 response is returned as a fetch record with no readings; coordinates are sent with at most 4 decimals",
+        "normalize() treats the first timeseries entry as the current model value (kind=model, observed_at = that entry's UTC time) and the rest as forecast"
+      ],
+      "deps": [
+        "t1",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "h15"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Use the verbatim fixture from tests/fixtures/, the HTTP helper and the provider contract; the adapter never touches the network in tests. normalize() must keep provider, source and model distinct and set observed_at from the provider's own timestamp, never from requested_at. Owns climate/weather/providers/met_no.py, tests/weather/providers/test_met_no.py. The fixture includes the recorded response headers; drive is_due from them."
+    },
+    {
+      "id": "t12",
+      "summary": "openweather adapter (current weather only)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "issues exactly one call per location to the 2.5 current-weather endpoint; there is no forecast or One Call code path",
+        "the API key is read from CLIMATE_OPENWEATHER_API_KEY; without it the provider reports itself disabled with a reason instead of failing the tick",
+        "the endpoint stored in the fetch record and every log line carry the key redacted"
+      ],
+      "deps": [
+        "t1",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "h11"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Use the verbatim fixture from tests/fixtures/, the HTTP helper and the provider contract; the adapter never touches the network in tests. normalize() must keep provider, source and model distinct and set observed_at from the provider's own timestamp, never from requested_at. Owns climate/weather/providers/openweather.py, tests/weather/providers/test_openweather.py."
+    },
+    {
+      "id": "t13",
+      "summary": "ims adapter (Envista station observations)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "station and channel ids are discovered from the stations endpoint and cached, never hard-coded; stations are chosen per location from provider settings (explicit ids) or nearest-by-distance",
+        "observed_at is converted from fixed UTC+2 to UTC regardless of the +03:00 label in the payload, proven by a test with a summer-date fixture",
+        "the token is read from CLIMATE_IMS_API_TOKEN; without it the provider reports itself disabled with a reason; readings are kind=observation and keep measured radiation channels (Grad, DiffR, NIP)"
+      ],
+      "deps": [
+        "t1",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "h16"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Use the verbatim fixture from tests/fixtures/, the HTTP helper and the provider contract; the adapter never touches the network in tests. normalize() must keep provider, source and model distinct and set observed_at from the provider's own timestamp, never from requested_at. Owns climate/weather/providers/ims.py, tests/weather/providers/test_ims.py. Built against the documented API shape only - no token exists yet, so live verification is a recorded plan risk, not part of this task."
+    },
+    {
+      "id": "t14",
+      "summary": "Keyless extras: METAR and IMS city-forecast XML adapters",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a metar adapter fetches configured ICAO stations from aviationweather.gov as kind=observation with roughly hourly cadence",
+        "an ims-forecast adapter stores the ISO-8859-8 city-forecast XML byte-exact and normalizes the configured city's daily forecast as kind=forecast",
+        "both are disabled unless enabled in provider settings"
+      ],
+      "deps": [
+        "t1",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "c8"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Use the verbatim fixture from tests/fixtures/, the HTTP helper and the provider contract; the adapter never touches the network in tests. normalize() must keep provider, source and model distinct and set observed_at from the provider's own timestamp, never from requested_at. Owns climate/weather/providers/metar.py, climate/weather/providers/ims_forecast.py and their tests."
+    },
+    {
+      "id": "t15",
+      "summary": "Read-only web API service",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/web/ serves exactly the routes in docs/weather-api.md plus the static dashboard directory; any non-GET method returns 405",
+        "latest reports unit, observed_at, age_seconds, provenance and a stale flag per value; series returns explicit nulls for missed ticks and a kind tag; stats computes due-versus-stored fetch counts from fetch records",
+        "no response body contains a latitude or longitude - locations appear by label only - proven by a test over every route",
+        "the bind address defaults to loopback and changes only through an explicit setting"
+      ],
+      "deps": [
+        "t3",
+        "t6"
+      ],
+      "covers": [
+        "c26",
+        "h17",
+        "h19",
+        "h20",
+        "h32",
+        "c36",
+        "h25"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/web/__init__.py, climate/weather/web/__main__.py, climate/weather/web/api.py, tests/weather/web/test_api.py. Use the standard library http.server (ThreadingHTTPServer) - a read-only JSON API plus static files needs no framework, which keeps the image's only third-party dependency pymongo. Tests call the handler functions with the in-memory store."
+    },
+    {
+      "id": "t16",
+      "summary": "Host CLI: stack noun (up, down, status, overview)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/_commands/stack.py exposes register(sub) with up, down, status and overview verbs, each with --json, wrapping docker compose for the climate-weather project only",
+        "down never passes a volume-removing flag; no verb in the module can remove weather-mongodb-data",
+        "missing docker, missing compose plugin, unreachable daemon or no compose file found (wheel install) each raise CliError exit 2 with a specific remediation hint"
+      ],
+      "deps": [
+        "t8"
+      ],
+      "covers": [
+        "c6",
+        "h5",
+        "h4"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/cli/_commands/stack.py, tests/test_cli_stack.py. Model on data-refinery-cli's data_refinery/cli/_commands/stack.py (read it, do not import it): find the compose file by walking up from the module; inject the subprocess runner so tests never call docker. Test through a local argparse parser built in the test, since the integration task does the real registration."
+    },
+    {
+      "id": "t17",
+      "summary": "Host CLI: weather query verbs over the HTTP API",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/_commands/weather.py exposes register(sub) with overview, latest, series, forecast and stats verbs; markdown by default, identical structure under --json",
+        "latest accepts --provider, --location and --max-age; when the freshest reading is older than --max-age it exits with a dedicated stale exit code (3) in both modes and the JSON carries stale: true",
+        "an unreachable web service exits 2 with a hint to run 'climate stack status', distinct from the stale code; with no data the verb says so and exits 0",
+        "the module imports only the standard library"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [
+        "c28",
+        "h19",
+        "c42",
+        "h30",
+        "c33",
+        "h22"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/cli/_commands/weather.py, tests/test_cli_weather.py. Calls the API with urllib and a timeout; base URL from CLIMATE_WEATHER_URL, default http://127.0.0.1 plus the default web port. Inject the fetch function in tests."
+    },
+    {
+      "id": "t18",
+      "summary": "Host CLI: providers verb",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/_commands/providers.py exposes register(sub); 'providers' lists each provider's capabilities, auth requirement, enabled state and reason, freshness strategy and attribution; --limits adds the quota columns; --json supported",
+        "a test fails when any registered adapter lacks a row or an attribution line"
+      ],
+      "deps": [
+        "t5"
+      ],
+      "covers": [
+        "c46",
+        "h34"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/cli/_commands/providers.py, tests/test_cli_providers.py. Reads the provider registry only - no network, no MongoDB, standard library only."
+    },
+    {
+      "id": "t19",
+      "summary": "Scheduler: per-provider due logic, isolation, no overlap, jitter",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "on each base tick every enabled provider is fetched only when its own configured interval has elapsed AND its is_due() allows it; one provider's settings never alter another's schedule",
+        "one provider raising, timing out or returning 429 still leaves every other provider fetched and stored in the same tick, and the failure is stored as a fetch record",
+        "a tick that overruns is never overlapped by the next; tick start carries a small random jitter; missed ticks are not backfilled",
+        "without the lease the scheduler issues zero provider requests"
+      ],
+      "deps": [
+        "t2",
+        "t3",
+        "t5"
+      ],
+      "covers": [
+        "c21",
+        "c41",
+        "h29",
+        "h1",
+        "h24"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/scheduler.py, tests/weather/test_scheduler.py. Inject clock, sleep, random, store and providers so tests run instantly with fakes. All providers are sampled on every due tick - there is no rotation. Every fetch made is stored as-is even when its bytes are unchanged - no dedup."
+    },
+    {
+      "id": "t20",
+      "summary": "Re-derivation of normalized readings from raw fetch records",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/rederive.py rebuilds normalized readings for a range of stored fetch records using each provider's normalize(), and a test proves the rebuilt readings equal the originals for every provider fixture",
+        "100% of readings produced by any adapter reference an existing fetch record; a test fails otherwise"
+      ],
+      "deps": [
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c37",
+        "h26",
+        "c22"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/rederive.py, tests/weather/test_rederive.py. Works against the store interface only."
+    },
+    {
+      "id": "t21",
+      "summary": "Tracker service entrypoint",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "'python -m climate.weather.tracker' loads configuration, validates secrets eagerly, acquires the lease and runs the scheduler in the foreground, logging one line per fetch with secrets redacted",
+        "with no location configured, or when another tracker holds the lease, it exits 2 with a remediation hint and issues no provider request",
+        "it writes a heartbeat document carrying the package version on start and on every tick, and shuts down cleanly on SIGTERM releasing the lease"
+      ],
+      "deps": [
+        "t9",
+        "t19",
+        "t10",
+        "t11",
+        "t12",
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c35",
+        "h6",
+        "c45"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/weather/tracker.py, tests/weather/test_tracker.py. Thin wiring only - logic belongs to config, scheduler, mongo and the adapters. A provider missing its key is disabled with a logged reason; it does not stop the tracker."
+    },
+    {
+      "id": "t22",
+      "summary": "Chart-first dashboard in the AgentCulture design",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/web/static/ holds a build-free dashboard (index.html, ES modules, inline SVG charts, tokens.css) that reads only the documented API routes; it is charts and stat tiles with little to no prose",
+        "observations, model values and forecasts are visually distinct; gaps in a series render as gaps, never as interpolated lines; the first-hour and provider-disabled states are explicit empty or partial states",
+        "a compact footer credits every provider whose data is on screen, linking its licence or terms",
+        "verified with the playwright MCP against the API serving fixture-derived data: light theme, dark theme and phone width, no console errors, screenshots saved under docs/design/"
+      ],
+      "deps": [
+        "t7",
+        "t15"
+      ],
+      "covers": [
+        "c30",
+        "h20",
+        "c47",
+        "h35"
+      ],
+      "instruction": "Owns climate/weather/web/static/** except tokens.css, and docs/design/. Load the frontend-design skill and the dataviz skill BEFORE writing any UI or chart code and follow them. Visual identity comes from tokens.css (org's 'First light over the mesh') and culture-nodes' web app as reference - read ../org and ../culture-nodes, never write there. Chart series colours: use the AgentCulture categorical palette only where it passes the dataviz colour validator in both themes, otherwise the dataviz-validated palette. Local time is a display concern only; the API is UTC. No Node toolchain, no CDN dependency that the page cannot work without."
+    },
+    {
+      "id": "t23",
+      "summary": "Host CLI: backup verb (dump and restore)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/_commands/backup.py exposes register(sub) with 'dump' (runs mongodump --archive --gzip inside the weather-mongodb container via docker compose exec and writes the archive to a host directory outside docker's volume store), 'list' and 'restore' (requires an explicit confirmation flag and refuses a non-empty database unless forced)",
+        "the dump directory is configurable, defaults under the XDG data home, and is never inside the repo; all verbs support --json and raise CliError exit 2 on docker problems"
+      ],
+      "deps": [
+        "t16"
+      ],
+      "covers": [
+        "c39",
+        "h27"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. Owns climate/cli/_commands/backup.py, tests/test_cli_backup.py. Inject the subprocess runner; tests never call docker. Because mongo publishes no host port, everything goes through 'docker compose exec'."
+    },
+    {
+      "id": "t24",
+      "summary": "doctor: tracker environment checks",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/_commands/doctor.py gains checks in the existing {id, passed, severity, message, remediation} shape: docker available, stack running, web API reachable, newest fetch age per provider, provider credentials present, database size and host disk headroom, newest backup age, host-CLI versus tracker image version skew naming both versions",
+        "the checks run from a wheel install with no culture.yaml, and a stopped stack yields failed checks with remediation rather than an exception; existing identity checks and their tests are unchanged"
+      ],
+      "deps": [
+        "t16",
+        "t17",
+        "t21"
+      ],
+      "covers": [
+        "c13",
+        "h10",
+        "c45",
+        "h33",
+        "c43",
+        "h31"
+      ],
+      "instruction": "Layout rule for the whole plan: service code lives under climate/weather/, host CLI verbs under climate/cli/_commands/. Do NOT edit climate/cli/__init__.py, climate/explain/catalog.py, pyproject.toml, README.md or CHANGELOG.md - the integration task owns them. Standard library only unless this task says otherwise; pymongo is imported lazily inside functions. Write the tests first. This task is the one allowed to edit climate/cli/_commands/doctor.py; also owns tests/test_cli_doctor_weather.py. Size, freshness and version figures come from the web API health and stats routes, not estimates. Standard library only."
+    },
+    {
+      "id": "t25",
+      "summary": "Integration: register nouns, explain catalog, packaging, docs, CI config",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/cli/__init__.py registers the stack, weather, providers and backup nouns; every new verb path resolves under 'climate explain'; 'uv run teken cli doctor . --strict' passes",
+        "pyproject.toml keeps dependencies = [] and adds a [project.optional-dependencies] extra holding pymongo; a test imports every host-side command module with third-party imports blocked",
+        "README.md, the root explain entry and the parser description describe the weather tracker with no template boilerplate left; per-provider licence, freshness and rate-limit notes are documented; CLAUDE.md documents the stack workflow",
+        "sonar-project.properties excludes climate/weather/web/static/** from coverage only; the version is bumped with a CHANGELOG entry; black, isort, flake8, bandit and markdownlint pass and coverage stays at or above 60%"
+      ],
+      "deps": [
+        "t16",
+        "t17",
+        "t18",
+        "t22",
+        "t23",
+        "t21",
+        "t24"
+      ],
+      "covers": [
+        "c9",
+        "h7",
+        "c10",
+        "h8",
+        "c18",
+        "h14"
+      ],
+      "instruction": "The only task that edits climate/cli/__init__.py, climate/explain/catalog.py, climate/cli/_commands/overview.py, climate/cli/_commands/learn.py, pyproject.toml, uv.lock, README.md, CLAUDE.md, CHANGELOG.md, sonar-project.properties. Use the version-bump skill (minor). Bandit will flag any 0.0.0.0 bind (B104) and urllib (B310): fix by design (loopback default, https-only), and annotate only what is genuinely intended."
+    },
+    {
+      "id": "t26",
+      "summary": "Live validation on this host",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "'climate stack up' from the checkout brings up all three containers healthy; within two ticks 'climate weather latest' returns readings from every keyless provider in markdown and --json",
+        "a dump taken from the running stack restores into an empty scratch mongo container with the same fetch-record count and content hashes",
+        "stopping the web container makes 'latest' exit 2 while 'stats' later shows collection continued; starting a second tracker issues no provider request",
+        "'climate weather stats' reports due-versus-stored counts from the database; the 24-hour 95% figure and the reboot-resume check are recorded as evidence when observed, or left explicitly open"
+      ],
+      "deps": [
+        "t24",
+        "t21",
+        "t20",
+        "t25",
+        "t22"
+      ],
+      "covers": [
+        "c1",
+        "c5",
+        "c36"
+      ],
+      "instruction": "Agent-side validation, not CI: run on this aarch64 host with a throwaway location in a scratch config outside the repo. Needs the user's go-ahead before 'stack up', because it starts real containers and makes real provider requests. File results with devague evidence; do not claim the 24-hour or reboot criteria unless actually observed."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "The ims adapter is built from documentation only: no token exists yet (requested by email 2026-09-17), so payload shape, station ids near the configured location, cadence and rate limits are unverified until it arrives",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "The openweather fixture is synthesized from documented shapes because no API key was used during planning; the first live fetch may reveal normalization gaps (raw storage is unaffected)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "The 24-hour 95% success figure and the reboot-resume check (c36) cannot be observed inside a build wave; t26 records them as evidence only when actually observed, otherwise they stay open",
+      "kind": "unknown_nonblocking",
+      "task_id": "t26",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "The spec and frame quote issue 5's public city-centre coordinates inside resolved question q5, so a literal repository-wide coordinate search (h18) would match docs/specs and .devague; t1's hygiene test therefore scans code, tests and docker files only. The user's own location is never in the repo",
+      "kind": "unknown_nonblocking",
+      "task_id": "t1",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "Approved obligation o8 is drifted and superseded by o15 (query verbs need no extra after decision c49); devague cannot reject an approved obligation, so tasks build to o15 and validate-delivery should file evidence against o15, not o8",
+      "kind": "unknown_nonblocking",
+      "task_id": "t25",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "Wave 1 is eleven tasks wide and file-disjoint by design, but five adapters plus the scheduler all lean on the t3 store and t5 provider contracts; a contract change discovered mid-wave is a /deviate, not a silent edit",
+      "kind": "unknown_nonblocking",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "Published multi-arch image so the stack runs from a PyPI install - tracked in issue 6",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "S3 archive, stored-data compaction, and the ecmwf-open / noaa-gfs adapters",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}

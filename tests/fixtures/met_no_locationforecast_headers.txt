@@ -1,0 +1,17 @@
+HTTP/2 200 
+server: nginx/1.18.0 (Ubuntu)
+date: Thu, 17 Sep 2026 18:27:16 GMT
+content-type: application/json
+content-length: 60823
+expires: Thu, 17 Sep 2026 18:58:55 GMT
+last-modified: Thu, 17 Sep 2026 18:27:16 GMT
+x-backend-host: b_157_249_79_114_loc
+access-control-allow-origin: *
+access-control-allow-methods: GET
+access-control-allow-headers: Origin
+vary: Accept, Accept-Encoding
+x-varnish: 58794538283
+age: 0
+via: 1.1 dalton-a (Varnish/7.7)
+accept-ranges: bytes
+

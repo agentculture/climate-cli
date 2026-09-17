@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="robots" content="noindex" />
+    <title>Weather tracker</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="dashboard.css" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='3.2' fill='%230b655c'/%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <a class="skip-link" href="#now">Skip to the readings</a>
+
+    <header class="masthead wide-rail">
+      <div class="masthead__identity">
+        <h1>Weather tracker</h1>
+        <p class="masthead__status" id="service-status" aria-live="polite">
+          <span class="dot dot--idle" aria-hidden="true"></span>
+          <span data-role="status-text">Connecting</span>
+        </p>
+      </div>
+
+      <fieldset class="controls">
+        <legend class="sr-only">What the page shows</legend>
+        <label class="control control--select">
+          <span class="control__label">Location</span>
+          <select id="location-select" disabled>
+            <option value="">Loading</option>
+          </select>
+        </label>
+
+        <fieldset class="control control--range">
+          <legend class="control__label">Window</legend>
+          <div class="segmented" id="window-control">
+            <label
+              ><input type="radio" name="window" value="6h" /><span>6 h</span></label
+            >
+            <label
+              ><input type="radio" name="window" value="24h" checked /><span>24 h</span></label
+            >
+            <label
+              ><input type="radio" name="window" value="7d" /><span>7 d</span></label
+            >
+          </div>
+        </fieldset>
+      </fieldset>
+    </header>
+
+    <main>
+      <div class="wide-rail">
+        <div class="page-state" id="page-state" hidden></div>
+
+        <section class="band" id="now" aria-labelledby="now-title">
+          <div class="band__head">
+            <h2 id="now-title">Now</h2>
+            <p class="band__note" data-role="now-note"></p>
+          </div>
+          <ul class="tiles" id="tiles"></ul>
+        </section>
+
+        <section class="band" id="trend" aria-labelledby="trend-title">
+          <div class="band__head">
+            <h2 id="trend-title" data-role="trend-title">Temperature</h2>
+            <p class="band__note" data-role="trend-note"></p>
+          </div>
+          <div class="variable-tabs" id="variable-tabs" role="tablist" aria-label="Variable"></div>
+          <div class="chart-card">
+            <div class="chart-card__legend" id="chart-legend"></div>
+            <div class="chart-card__plot" id="chart-plot"></div>
+            <details class="table-fallback">
+              <summary>Data table</summary>
+              <div class="table-fallback__scroll" id="chart-table"></div>
+            </details>
+          </div>
+        </section>
+
+        <section class="band" id="collection" aria-labelledby="collection-title">
+          <div class="band__head">
+            <h2 id="collection-title">Collection</h2>
+            <p class="band__note" data-role="collection-note"></p>
+          </div>
+          <div class="health" id="health"></div>
+        </section>
+      </div>
+    </main>
+
+    <footer class="credits wide-rail" id="credits">
+      <h2 class="credits__title">Data on this page</h2>
+      <ul class="credits__list" id="credits-list"></ul>
+    </footer>
+
+    <script type="module" src="js/app.js"></script>
+  </body>
+</html>

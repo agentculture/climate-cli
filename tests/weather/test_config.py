@@ -1,0 +1,585 @@
+"""Tests for climate.weather.config — user configuration, locations, quota.
+
+Uses a neutral public reference point (Greenwich Observatory, 51.48, -0.00)
+for every test coordinate; never the user's real location.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+
+import pytest
+
+from climate.cli._errors import CliError
+from climate.weather import config as weather_config
+
+GREENWICH_LAT = 51.4800001
+GREENWICH_LON = -0.0000001
+
+# Minimum decimal digits (in the literal's own source text, not its parsed
+# float value) for a number to be treated as coordinate-shaped. A plain
+# timeout/backoff/jitter constant such as 10.0, 0.5 or 0.25 has at most two
+# decimal digits; a latitude/longitude such as 51.4769 needs the precision
+# a short constant never does.
+_MIN_COORDINATE_DECIMAL_DIGITS = 3
+
+
+def _write_config(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def _find_coordinate_like_literals(source: str, filename: str = "<test>"):
+    """Return (filename, source_text) for float literals shaped like a coordinate.
+
+    A literal counts only when its OWN SOURCE TEXT (not its parsed float
+    value, which loses trailing/rounding information) has at least
+    ``_MIN_COORDINATE_DECIMAL_DIGITS`` decimal digits and the literal's
+    value lies within a plausible latitude/longitude range.
+    """
+    tree = ast.parse(source, filename=filename)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            text = ast.get_source_segment(source, node)
+            if text is None:
+                continue
+            _, _, decimals = text.partition(".")
+            decimals = decimals.rstrip("jJ")  # tolerate stray complex suffixes
+            if len(decimals) < _MIN_COORDINATE_DECIMAL_DIGITS:
+                continue
+            if -180.0 <= node.value <= 180.0:
+                hits.append((filename, text))
+    return hits
+
+
+def _base_config(**overrides):
+    data = {
+        "locations": {
+            "greenwich": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+        },
+        "providers": {
+            "open-meteo": {
+                "enabled": True,
+                "interval_seconds": 900,
+                "request_params": {"forecast_hours": 48},
+                "quota": {"calls_per_day": 10000},
+            }
+        },
+    }
+    data.update(overrides)
+    return data
+
+
+class TestConfigPathResolution:
+    def test_env_var_overrides_default_path(self, tmp_path, monkeypatch):
+        cfg_path = tmp_path / "custom" / "weather.json"
+        _write_config(cfg_path, _base_config())
+        monkeypatch.setenv(weather_config.CONFIG_PATH_ENV_VAR, str(cfg_path))
+
+        resolved = weather_config.resolve_config_path()
+
+        assert resolved == cfg_path
+
+    def test_default_path_is_outside_the_repo_under_xdg_config(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(weather_config.CONFIG_PATH_ENV_VAR, raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdgconf"))
+
+        resolved = weather_config.default_config_path()
+
+        assert resolved == tmp_path / "xdgconf" / "climate-cli" / "weather.json"
+        # Must never resolve inside this repository checkout.
+        import climate
+
+        repo_root = weather_config.Path(climate.__file__).resolve().parents[1]
+        assert not str(resolved).startswith(str(repo_root))
+
+    def test_explicit_path_argument_wins_over_env_var(self, tmp_path, monkeypatch):
+        env_path = tmp_path / "from_env.json"
+        explicit_path = tmp_path / "explicit.json"
+        _write_config(env_path, _base_config())
+        _write_config(explicit_path, _base_config())
+        monkeypatch.setenv(weather_config.CONFIG_PATH_ENV_VAR, str(env_path))
+
+        resolved = weather_config.resolve_config_path(explicit_path)
+
+        assert resolved == explicit_path
+
+
+class TestLoadConfig:
+    def test_loads_labelled_locations_and_provider_settings(self, tmp_path):
+        cfg_path = _write_config(tmp_path / "weather.json", _base_config())
+
+        config = weather_config.load_config(cfg_path)
+
+        assert set(config.locations) == {"greenwich"}
+        location = config.locations["greenwich"]
+        assert location.label == "greenwich"
+
+        provider = config.providers["open-meteo"]
+        assert provider.provider_id == "open-meteo"
+        assert provider.enabled is True
+        assert provider.interval_seconds == 900
+        assert provider.request_params == {"forecast_hours": 48}
+        assert provider.quota.calls_per_day == 10000
+
+    def test_missing_config_file_yields_empty_but_typed_config(self, tmp_path):
+        missing_path = tmp_path / "does_not_exist.json"
+
+        config = weather_config.load_config(missing_path)
+
+        assert config.locations == {}
+        assert config.providers == {}
+
+
+class TestNoLocationConfigured:
+    def test_load_tracker_config_raises_env_error_with_remediation(self, tmp_path):
+        cfg_path = _write_config(
+            tmp_path / "weather.json",
+            {"locations": {}, "providers": {}},
+        )
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_tracker_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert error.remediation
+
+    def test_missing_file_also_raises_for_the_tracker(self, tmp_path):
+        missing_path = tmp_path / "does_not_exist.json"
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_tracker_config(missing_path)
+
+        assert exc_info.value.code == 2
+
+    def test_coordinate_literal_detector_flags_coordinates_not_plain_constants(self, tmp_path):
+        sample = tmp_path / "sample.py"
+        sample.write_text(
+            "DEFAULT_TIMEOUT = 10.0\n" "JITTER = 0.5\n" "BACKOFF = 0.25\n" "HOME_LAT = 51.4769\n",
+            encoding="utf-8",
+        )
+
+        hits = _find_coordinate_like_literals(sample.read_text(encoding="utf-8"), str(sample))
+
+        flagged_texts = [text for _, text in hits]
+        assert "51.4769" in flagged_texts
+        assert "10.0" not in flagged_texts
+        assert "0.5" not in flagged_texts
+        assert "0.25" not in flagged_texts
+
+    def test_no_default_place_exists_anywhere_in_the_package(self):
+        import pathlib
+
+        package_root = pathlib.Path(weather_config.__file__).resolve().parent
+        offenders = []
+        for py_file in package_root.rglob("*.py"):
+            source = py_file.read_text(encoding="utf-8")
+            offenders.extend(_find_coordinate_like_literals(source, str(py_file)))
+        assert offenders == [], f"possible hard-coded coordinate literals: {offenders}"
+
+
+class TestCoordinateRounding:
+    def test_default_precision_is_two_decimals(self, tmp_path):
+        cfg_path = _write_config(tmp_path / "weather.json", _base_config())
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert location.latitude == 51.48
+        assert location.longitude == -0.0
+
+    def test_precision_is_configurable(self, tmp_path):
+        data = _base_config(coordinate_precision=3)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert location.latitude == round(GREENWICH_LAT, 3)
+
+    def test_precision_is_never_more_than_four_decimals(self, tmp_path):
+        data = _base_config(coordinate_precision=8)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert location.latitude == round(GREENWICH_LAT, 4)
+
+    def test_round_coordinate_clamps_precision_directly(self):
+        assert weather_config.round_coordinate(GREENWICH_LON, 8) == round(GREENWICH_LON, 4)
+        assert weather_config.round_coordinate(GREENWICH_LAT, 2) == 51.48
+
+    def test_rounding_happens_before_any_other_module_sees_it(self, tmp_path):
+        # load_config is the single seam other modules go through; the
+        # returned Location must already carry rounded values, never the
+        # raw, higher-precision input.
+        cfg_path = _write_config(tmp_path / "weather.json", _base_config())
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert location.latitude != GREENWICH_LAT
+        assert location.longitude != GREENWICH_LON
+
+
+class TestQuotaValidation:
+    def test_locations_times_interval_within_quota_is_accepted(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = 10000
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        assert config.providers["open-meteo"].quota.calls_per_day == 10000
+
+    def test_locations_times_interval_exceeding_quota_is_rejected(self, tmp_path):
+        data = _base_config(
+            locations={
+                "greenwich": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+                "second": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+            }
+        )
+        # Every-tick fetch (5 minutes) x 2 locations x a day = 576 calls/day,
+        # far above a deliberately tiny quota of 10.
+        data["providers"]["open-meteo"]["interval_seconds"] = 300
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = 10
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert "open-meteo" in error.message
+        assert error.code == 2
+        assert error.remediation
+
+    def test_quota_error_names_the_offending_provider_among_several(self, tmp_path):
+        data = _base_config(
+            providers={
+                "open-meteo": {
+                    "enabled": True,
+                    "interval_seconds": 900,
+                    "request_params": {},
+                    "quota": {"calls_per_day": 10000},
+                },
+                "met-no": {
+                    "enabled": True,
+                    "interval_seconds": 60,
+                    "request_params": {},
+                    "quota": {"calls_per_day": 5},
+                },
+            }
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert "met-no" in exc_info.value.message
+        assert "open-meteo" not in exc_info.value.message
+
+    def test_no_quota_configured_means_no_limit_check(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"] = {}
+        data["providers"]["open-meteo"]["interval_seconds"] = 1
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        assert config.providers["open-meteo"].quota.calls_per_day is None
+
+    def test_disabled_provider_is_never_quota_validated(self, tmp_path):
+        # Two locations at a 1-second interval would blow any real quota;
+        # the provider is disabled, so the scheduler will never poll it and
+        # load_config must not treat it as a startup failure either.
+        data = _base_config(
+            locations={
+                "greenwich": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+                "second": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+            }
+        )
+        data["providers"]["open-meteo"]["enabled"] = False
+        data["providers"]["open-meteo"]["interval_seconds"] = 1
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = 1
+
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        assert config.providers["open-meteo"].enabled is False
+        assert config.providers["open-meteo"].quota.calls_per_day == 1
+
+
+class TestMalformedConfigShape:
+    """Qodo #12: malformed-but-valid JSON must raise CliError, never a traceback."""
+
+    def test_non_mapping_root_raises_cli_error(self, tmp_path):
+        cfg_path = tmp_path / "weather.json"
+        cfg_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert exc_info.value.remediation
+
+    def test_invalid_json_raises_cli_error_not_a_traceback(self, tmp_path):
+        cfg_path = tmp_path / "weather.json"
+        cfg_path.write_text("{not valid json", encoding="utf-8")
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert str(cfg_path) in exc_info.value.message
+
+    def test_non_mapping_locations_raises_cli_error(self, tmp_path):
+        data = _base_config(locations=[1, 2])
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "locations" in exc_info.value.message
+
+    def test_non_mapping_providers_raises_cli_error(self, tmp_path):
+        data = _base_config(providers="not-a-mapping")
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "providers" in exc_info.value.message
+
+    def test_non_mapping_location_entry_raises_cli_error(self, tmp_path):
+        data = _base_config(locations={"greenwich": [GREENWICH_LAT, GREENWICH_LON]})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+    def test_non_mapping_provider_entry_raises_cli_error(self, tmp_path):
+        data = _base_config(providers={"open-meteo": "not-a-mapping"})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "open-meteo" in exc_info.value.message
+
+    def test_non_mapping_request_params_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["request_params"] = "not-a-mapping"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_mapping_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"] = "not-a-mapping"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_interval_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["interval_seconds"] = "soon"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_positive_interval_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        non_positive_interval = 900 - 900
+        data["providers"]["open-meteo"]["interval_seconds"] = non_positive_interval
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_interval_raises_cli_error(self, tmp_path):
+        # True/False are `int` in Python; they must never pass as a config number.
+        data = _base_config()
+        data["providers"]["open-meteo"]["interval_seconds"] = True
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = "lots"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = False
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_negative_precision_raises_cli_error(self, tmp_path):
+        negative_precision = 0 - 1
+        data = _base_config(coordinate_precision=negative_precision)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_precision_raises_cli_error(self, tmp_path):
+        data = _base_config(coordinate_precision=True)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_precision_raises_cli_error(self, tmp_path):
+        data = _base_config(coordinate_precision="two")
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_zero_precision_is_valid_and_rounds_to_whole_degrees(self, tmp_path):
+        # Whole-degree rounding is a legitimate — the most private — setting;
+        # 0 must load, not raise, and round_coordinate must clamp to it.
+        data = _base_config(coordinate_precision=0)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert config.coordinate_precision == 0
+        assert location.latitude == round(GREENWICH_LAT, 0)
+        assert location.longitude == round(GREENWICH_LON, 0)
+
+    def test_missing_latitude_raises_cli_error_naming_location(self, tmp_path):
+        data = _base_config(locations={"greenwich": {"longitude": GREENWICH_LON}})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+    def test_missing_longitude_raises_cli_error_naming_location(self, tmp_path):
+        data = _base_config(locations={"greenwich": {"latitude": GREENWICH_LAT}})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+
+class TestInvalidCoordinates:
+    """Qodo #13: nonfinite/out-of-range coordinates must raise CliError.
+
+    The error must name the location label and the offending field, never
+    echo the coordinate value (location is private data in this project).
+    """
+
+    def test_nan_latitude_raises_cli_error(self, tmp_path):
+        bad_latitude = float("nan")
+        data = _base_config(
+            locations={"greenwich": {"latitude": bad_latitude, "longitude": GREENWICH_LON}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "latitude" in error.message
+
+    def test_infinite_longitude_raises_cli_error(self, tmp_path):
+        bad_longitude = float("inf")
+        data = _base_config(
+            locations={"greenwich": {"latitude": GREENWICH_LAT, "longitude": bad_longitude}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "longitude" in error.message
+
+    def test_latitude_above_ninety_raises_cli_error_without_echoing_value(self, tmp_path):
+        # Built from an expression, never a coordinate-shaped literal.
+        out_of_range_latitude = 90 + 110
+        data = _base_config(
+            locations={"greenwich": {"latitude": out_of_range_latitude, "longitude": GREENWICH_LON}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "latitude" in error.message
+        assert str(out_of_range_latitude) not in error.message
+
+    def test_longitude_below_negative_one_eighty_raises_cli_error(self, tmp_path):
+        out_of_range_longitude = -180 - 320
+        data = _base_config(
+            locations={
+                "greenwich": {"latitude": GREENWICH_LAT, "longitude": out_of_range_longitude}
+            }
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "longitude" in error.message
+        assert str(out_of_range_longitude) not in error.message
