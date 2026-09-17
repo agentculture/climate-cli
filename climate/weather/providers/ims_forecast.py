@@ -33,13 +33,19 @@ has no field for :class:`~climate.weather.providers.base.RequestSpec.context`
 (context lives on the *request*, not the stored record) — so a setting that
 only matters at normalize time, like which city to pick out of an
 all-cities feed, cannot ride along on the fetch record any other way. This
-adapter appends the configured candidates as a harmless ``cities=`` query
-parameter on the *stored* request URL (the endpoint itself never needs it —
-the feed is one static file — and it is not a secret, so it is not
-redacted), and reads them back off ``fetch_record.endpoint`` in
-:meth:`normalize`. That keeps normalization pure and re-derivable from the
-one stored fetch record, matching spec ``h2``, without editing the
-merged store or provider contracts.
+adapter appends the configured candidates to the **fragment** of the
+*stored* request URL (``...isr_cities.xml#cities=<urlencoded candidates>``),
+never the query string. A location/city name is private data in this
+project (see the repo's privacy rule), and a URL fragment is a purely
+client-side annotation: ``urllib.request.Request`` (and every HTTP client)
+strips it before building the wire request — ``Request(url).selector`` is
+the path *without* the fragment, so it never reaches ``ims.gov.il``'s
+access logs — while :class:`~climate.weather.store.FetchRecord` still
+stores the full URL including the fragment as ``endpoint``, which is what
+lets :meth:`ImsForecastProvider.normalize` read the candidates back and
+stay pure/re-derivable from the one stored fetch record (spec ``h2``),
+without editing the merged store or provider contracts. See
+:func:`_candidate_cities`.
 
 The raw response bytes are handed to :mod:`xml.etree.ElementTree` exactly as
 received — never decoded/re-encoded by this module — so the ``ISO-8859-8``
@@ -143,7 +149,8 @@ class ImsForecastProvider(WeatherProvider):
         cities = [str(city).strip() for city in (params.get("cities") or []) if city]
         if not cities:
             return ()
-        url = f"{_ENDPOINT}?{urlencode({'cities': ','.join(cities)})}"
+        fragment = urlencode({"cities": ",".join(cities)})
+        url = f"{_ENDPOINT}#{fragment}"
         return (
             RequestSpec(
                 provider_id=self.id,
@@ -172,6 +179,11 @@ class ImsForecastProvider(WeatherProvider):
 
         cities = _candidate_cities(fetch_record)
         if not cities:
+            _LOGGER.warning(
+                "ims-forecast: fetch record %r carries no city candidates in its endpoint "
+                "fragment; nothing was configured when this fetch was made",
+                getattr(fetch_record, "endpoint", ""),
+            )
             return ()
 
         matched = _match_city(root, cities)
@@ -218,13 +230,17 @@ def _candidate_cities(fetch_record: FetchRecordLike) -> tuple[str, ...]:
     The stored :class:`~climate.weather.store.FetchRecord` has no field for
     :class:`~climate.weather.providers.base.RequestSpec.context`, so
     :meth:`ImsForecastProvider.build_requests` carries the candidates on the
-    request URL itself, as a ``cities=`` query parameter (see the module
-    docstring's contract note). Reading it back here keeps ``normalize``
-    re-derivable from the one stored fetch record alone.
+    request URL's **fragment** (see the module docstring's contract note) —
+    never the query string, because a city/location name is private data
+    and a fragment is the one part of a URL no HTTP client ever transmits.
+    Reading it back here keeps ``normalize`` re-derivable from the one
+    stored fetch record alone. A record with no fragment (nothing
+    configured when it was fetched, or an older/foreign record) yields no
+    candidates, which ``normalize`` also treats as "no readings."
     """
     endpoint = getattr(fetch_record, "endpoint", "") or ""
-    query = parse_qsl(urlsplit(endpoint).query)
-    for name, value in query:
+    fragment = urlsplit(endpoint).fragment
+    for name, value in parse_qsl(fragment):
         if name == "cities" and value:
             return tuple(city for city in value.split(",") if city)
     return ()

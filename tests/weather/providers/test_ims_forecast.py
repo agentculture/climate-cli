@@ -9,6 +9,7 @@ from the XML prolog itself.
 from __future__ import annotations
 
 import logging
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -100,19 +101,63 @@ def test_no_cities_configured_emits_no_requests() -> None:
     assert provider.build_requests(LOCATION, ProviderSettings(enabled=True, params={})) == ()
 
 
-def test_configured_cities_build_one_request_carrying_the_candidates() -> None:
+def test_configured_cities_build_one_request_carrying_the_candidates_in_the_fragment() -> None:
     provider = ImsForecastProvider()
     settings = ProviderSettings(enabled=True, params={"cities": ["Herzliya", "Tel Aviv - Yafo"]})
     requests = provider.build_requests(LOCATION, settings)
     assert len(requests) == 1
     spec = requests[0]
     assert spec.url.startswith(
-        "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml?"
+        "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#"
     )
-    assert "cities=" in spec.url
+    assert "cities=" in spec.url.split("#", 1)[1]
+
+
+def test_the_candidates_are_never_sent_on_the_wire() -> None:
+    # Location/city names are private data. A URL fragment is never
+    # transmitted by an HTTP client; prove it for the real url this
+    # adapter builds, at the level urllib actually uses to issue the GET.
+    provider = ImsForecastProvider()
+    settings = ProviderSettings(enabled=True, params={"cities": ["Herzliya", "Tel Aviv - Yafo"]})
+    spec = provider.build_requests(LOCATION, settings)[0]
+    request = urllib.request.Request(spec.url, method="GET")
+    assert "cities=" not in request.selector
+    assert "Herzliya" not in request.selector
+    assert "Tel Aviv" not in request.selector
+    assert "Yafo" not in request.selector
 
 
 # --- normalize: city matching --------------------------------------------------
+
+
+def test_fetch_record_accepts_the_fragment_bearing_endpoint_and_normalize_recovers_it() -> None:
+    # Round-trip through the real build_requests()-produced URL (not a
+    # hand-written literal) to prove store.FetchRecord accepts a fragment
+    # in its endpoint field and that normalize() recovers the ordered
+    # candidates from it byte-for-byte, including names with spaces and
+    # " - ".
+    provider = ImsForecastProvider()
+    settings = ProviderSettings(
+        enabled=True, params={"cities": ["My Home Town", "Tel Aviv - Yafo"]}
+    )
+    spec = provider.build_requests(LOCATION, settings)[0]
+
+    record = FetchRecord(
+        provider="ims-forecast",
+        endpoint=spec.url,
+        location=NEUTRAL_LABEL,
+        requested_at=NOW,
+        status=200,
+        body=FIXTURE_BODY,
+    )
+    assert record.endpoint == spec.url  # accepted verbatim, fragment and all
+
+    readings = provider.normalize(record)
+    # "My Home Town" is not a real feed city; "Tel Aviv - Yafo" is, and
+    # must still be found even though the first candidate has a space and
+    # the matched feed name has " - ".
+    assert readings
+    assert all(r.source == "ims-forecast/Tel Aviv - Yafo" for r in readings)
 
 
 def test_normalize_picks_the_first_candidate_present_in_the_feed() -> None:
@@ -121,7 +166,7 @@ def test_normalize_picks_the_first_candidate_present_in_the_feed() -> None:
     provider = ImsForecastProvider()
     url = (
         "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml"
-        "?cities=Herzliya,Tel+Aviv+-+Yafo"
+        "#cities=Herzliya,Tel+Aviv+-+Yafo"
     )
     readings = provider.normalize(_fetch_record(url))
     assert readings
@@ -135,7 +180,7 @@ def test_city_matching_is_case_insensitive_and_tolerates_dash_spacing() -> None:
     provider = ImsForecastProvider()
     url = (
         "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml"
-        "?cities=tel+aviv-yafo"
+        "#cities=tel+aviv-yafo"
     )
     readings = provider.normalize(_fetch_record(url))
     assert readings
@@ -148,7 +193,7 @@ def test_no_candidate_present_returns_no_readings_and_logs_why(
     provider = ImsForecastProvider()
     url = (
         "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml"
-        "?cities=Nowhereville"
+        "#cities=Nowhereville"
     )
     with caplog.at_level(logging.WARNING):
         readings = provider.normalize(_fetch_record(url))
@@ -156,10 +201,18 @@ def test_no_candidate_present_returns_no_readings_and_logs_why(
     assert any("Nowhereville" in message for message in caplog.messages)
 
 
-def test_no_configured_candidates_on_this_record_returns_no_readings() -> None:
+def test_no_fragment_on_the_record_returns_no_readings_and_logs_why(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # A record whose endpoint carries no "cities" fragment at all — nothing
+    # was configured when it was fetched, or it is a foreign/older record.
+    # normalize() must not raise; it returns nothing and says why.
     provider = ImsForecastProvider()
     url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml"
-    assert provider.normalize(_fetch_record(url)) == ()
+    with caplog.at_level(logging.WARNING):
+        readings = provider.normalize(_fetch_record(url))
+    assert readings == ()
+    assert any("no city candidates" in message for message in caplog.messages)
 
 
 # --- normalize: values ---------------------------------------------------------
@@ -167,7 +220,7 @@ def test_no_configured_candidates_on_this_record_returns_no_readings() -> None:
 
 def test_normalize_emits_one_forecast_reading_per_date_with_daily_values() -> None:
     provider = ImsForecastProvider()
-    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml?cities=Elat"
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
     readings = provider.normalize(_fetch_record(url))
     by_date = {r.observed_at.date().isoformat(): r for r in readings}
     assert "2026-09-18" in by_date
@@ -194,7 +247,7 @@ def test_normalize_drops_no_provider_value_from_the_fixture() -> None:
     id.
     """
     provider = ImsForecastProvider()
-    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml?cities=Elat"
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
     readings = provider.normalize(_fetch_record(url))
     reading = next(r for r in readings if r.observed_at.date().isoformat() == "2026-09-18")
 
@@ -217,7 +270,7 @@ def test_normalize_returns_nothing_for_a_failed_fetch() -> None:
     failed = FetchRecord(
         provider="ims-forecast",
         endpoint=(
-            "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml?cities=Elat"
+            "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
         ),
         location=NEUTRAL_LABEL,
         requested_at=NOW,
@@ -230,6 +283,6 @@ def test_normalize_returns_nothing_for_a_failed_fetch() -> None:
 
 def test_normalize_is_pure_and_re_derivable() -> None:
     provider = ImsForecastProvider()
-    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml?cities=Elat"
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
     record = _fetch_record(url)
     assert provider.normalize(record) == provider.normalize(record)
