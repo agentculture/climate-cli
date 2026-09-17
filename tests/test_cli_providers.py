@@ -286,10 +286,17 @@ def test_providers_never_prints_a_location_or_coordinate(
         assert banned not in out.lower()
 
 
-def test_no_providers_registered_is_reported_plainly(
-    capsys: pytest.CaptureFixture[str],
+def test_render_table_reports_plainly_with_no_rows() -> None:
+    # A pure unit test of the renderer itself (not the live registry, which
+    # may legitimately be non-empty by the time this test runs — real
+    # adapters merge in parallel).
+    assert providers_cmd.render_table([]) == "no providers registered"
+
+
+def test_bare_providers_reports_plainly_when_registry_is_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    registry.clear_cache()
+    monkeypatch.setattr(providers_cmd, "_rows", lambda: [])
     rc, _ = _run(["providers"])
     assert rc == 0
     assert "no providers registered" in capsys.readouterr().out
@@ -481,26 +488,32 @@ def test_every_row_has_a_nonblank_attribution_string(
 def test_live_registry_every_adapter_has_a_row_and_an_attribution() -> None:
     """Guards the real registry directly (no fake adapters installed).
 
-    Five adapters (open-meteo, met-no, openweather, ims, metar,
-    ims-forecast) are being written in parallel and none exists in this
-    worktree yet, so today this passes trivially over zero adapters — that
-    is asserted explicitly below rather than skipped, so the moment a real
-    adapter merges this test starts guarding it for real.
+    Deliberately never pins the registry's size: adapters (open-meteo,
+    met-no, openweather, ims, metar, ims-forecast) are merging in parallel,
+    so this must hold whether the registry holds zero adapters or many. It
+    runs the row + attribution check over whatever `iter_providers()`
+    actually returns, and separately asserts that the check looked at every
+    provider present (rendered-row count == provider count) — so an empty
+    registry passes honestly because there was truly nothing to check, not
+    because the loop below was silently skipped.
     """
     registry.clear_cache()
     live_providers = registry.iter_providers()
-    if not live_providers:
-        assert live_providers == ()  # explicit: trivial pass over zero adapters
-        return
 
-    rows = {row["id"]: row for row in providers_cmd._rows()}
+    rows = providers_cmd._rows()
+    assert len(rows) == len(live_providers)  # the check ran over every provider present
+
+    rows_by_id = {row["id"]: row for row in rows}
     problems: list[str] = []
     for provider in live_providers:
-        row = rows.get(provider.id)
+        row = rows_by_id.get(provider.id)
         if row is None:
             problems.append(f"{provider.id}: no row in `providers` output")
             continue
-        attribution_cell = providers_cmd._attribution_cell(row.get("attribution"))
-        if attribution_cell == "MISSING ATTRIBUTION" or not attribution_cell.strip():
-            problems.append(f"{provider.id}: no attribution line")
+        attribution = row.get("attribution") or {}
+        if not (attribution.get("text") or "").strip():
+            problems.append(f"{provider.id}: attribution text is empty")
+        if not (attribution.get("url") or "").strip():
+            problems.append(f"{provider.id}: attribution url is empty")
+        problems.extend(f"{provider.id}: {p}" for p in registry.validate_provider(provider))
     assert problems == []
