@@ -1,0 +1,26 @@
+[
+  {
+    "stationId": 1,
+    "name": "EXAMPLE-FIXTURE-STATION",
+    "shortName": "EXAMPLE",
+    "stationTarget": "רגיל",
+    "owner": "IMS",
+    "regionId": 1,
+    "timebase": 10,
+    "active": true,
+    "location": {"latitude": 0.0, "longitude": 0.0},
+    "StationTarget": "רגיל",
+    "monitors": [
+      {"channelId": 1, "name": "TD", "alias": "Air Temperature (2m)", "typeId": 1, "typeDesc": "instant", "units": "C", "active": true},
+      {"channelId": 2, "name": "RH", "alias": "Relative Humidity", "typeId": 1, "typeDesc": "instant", "units": "%", "active": true},
+      {"channelId": 3, "name": "WS", "alias": "Wind Speed (10m)", "typeId": 1, "typeDesc": "instant", "units": "m/s", "active": true},
+      {"channelId": 4, "name": "WD", "alias": "Wind Direction (10m)", "typeId": 1, "typeDesc": "instant", "units": "deg", "active": true},
+      {"channelId": 5, "name": "WSMax", "alias": "Wind Gust (10m)", "typeId": 1, "typeDesc": "instant", "units": "m/s", "active": true},
+      {"channelId": 6, "name": "Rain", "alias": "Rain", "typeId": 1, "typeDesc": "accumulated", "units": "mm", "active": true},
+      {"channelId": 7, "name": "BP", "alias": "Barometric Pressure", "typeId": 1, "typeDesc": "instant", "units": "hPa", "active": true},
+      {"channelId": 8, "name": "Grad", "alias": "Global Radiation", "typeId": 1, "typeDesc": "instant", "units": "w/m^2", "active": true},
+      {"channelId": 9, "name": "DiffR", "alias": "Diffuse Radiation", "typeId": 1, "typeDesc": "instant", "units": "w/m^2", "active": true},
+      {"channelId": 10, "name": "NIP", "alias": "Direct Radiation", "typeId": 1, "typeDesc": "instant", "units": "w/m^2", "active": true}
+    ]
+  }
+]

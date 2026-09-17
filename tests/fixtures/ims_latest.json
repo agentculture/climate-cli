@@ -1,0 +1,20 @@
+{
+  "stationId": 1,
+  "data": [
+    {
+      "datetime": "2026-06-15T14:00:00+03:00",
+      "channels": [
+        {"id": 1, "name": "TD", "alias": "Air Temperature (2m)", "value": 28.4, "status": 1, "valid": true},
+        {"id": 2, "name": "RH", "alias": "Relative Humidity", "value": 55.0, "status": 1, "valid": true},
+        {"id": 3, "name": "WS", "alias": "Wind Speed (10m)", "value": 2.9, "status": 1, "valid": true},
+        {"id": 4, "name": "WD", "alias": "Wind Direction (10m)", "value": 280.0, "status": 1, "valid": true},
+        {"id": 5, "name": "WSMax", "alias": "Wind Gust (10m)", "value": 4.6, "status": 1, "valid": true},
+        {"id": 6, "name": "Rain", "alias": "Rain", "value": 0.0, "status": 1, "valid": true},
+        {"id": 7, "name": "BP", "alias": "Barometric Pressure", "value": 1012.3, "status": 1, "valid": true},
+        {"id": 8, "name": "Grad", "alias": "Global Radiation", "value": 610.0, "status": 1, "valid": true},
+        {"id": 9, "name": "DiffR", "alias": "Diffuse Radiation", "value": 90.0, "status": 1, "valid": true},
+        {"id": 10, "name": "NIP", "alias": "Direct Radiation", "value": 720.0, "status": 1, "valid": true}
+      ]
+    }
+  ]
+}
