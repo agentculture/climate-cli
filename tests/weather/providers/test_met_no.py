@@ -19,7 +19,7 @@ from climate.weather.providers.base import (
     RequestSpec,
     validate_provider,
 )
-from climate.weather.providers.met_no import MetNoProvider
+from climate.weather.providers.met_no import _INSTANT_VARIABLES, MetNoProvider
 from climate.weather.store import FetchError, FetchRecord
 from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
 
@@ -54,7 +54,7 @@ class _Location:
 LOCATION = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
 
 # The fixture's own recorded 'date' header, as the moment it was requested.
-NOW = datetime(2026, 9, 17, 18, 10, 47, tzinfo=UTC)
+NOW = datetime(2026, 9, 17, 18, 27, 16, tzinfo=UTC)
 
 
 def _fetch_record(**overrides: object) -> FetchRecord:
@@ -133,11 +133,44 @@ def test_build_requests_carries_if_modified_since_from_the_last_fetch() -> None:
     assert spec.if_modified_since == _CACHE_HEADERS["last-modified"]
 
 
-def test_conditional_headers_helper_is_available_without_build_requests() -> None:
-    """A scheduler that cannot pass last_fetch into build_requests can call this."""
-    assert MetNoProvider.conditional_headers(None) is None
+def test_conditional_headers_returns_a_mapping_the_scheduler_merges_in() -> None:
+    """The scheduler calls this directly (not through build_requests) and
+    merges its return value into the request headers it sends."""
+    assert MetNoProvider.conditional_headers(None) == {}
+
     last = _fetch_record()
-    assert MetNoProvider.conditional_headers(last) == _CACHE_HEADERS["last-modified"]
+    assert MetNoProvider.conditional_headers(last) == {
+        "If-Modified-Since": _CACHE_HEADERS["last-modified"]
+    }
+
+
+def test_conditional_headers_is_empty_for_a_failed_fetch_with_no_headers() -> None:
+    failed = FetchRecord(
+        provider="met-no",
+        endpoint="https://api.met.no/weatherapi/locationforecast/2.0/complete",
+        location=NEUTRAL_LABEL,
+        requested_at=NOW,
+        status=None,
+        error=FetchError(kind="timeout"),
+    )
+    assert MetNoProvider.conditional_headers(failed) == {}
+
+
+def test_conditional_headers_reads_a_real_store_fetch_record_case_insensitively() -> None:
+    """Exercises the exact shape the scheduler hands in: a real
+    store.FetchRecord whose cache_headers carries Last-Modified."""
+    record = FetchRecord(
+        provider="met-no",
+        endpoint="https://api.met.no/weatherapi/locationforecast/2.0/complete",
+        location=NEUTRAL_LABEL,
+        requested_at=NOW,
+        status=200,
+        body=b"{}",
+        cache_headers={"Last-Modified": "Thu, 17 Sep 2026 18:27:16 GMT"},
+    )
+    assert MetNoProvider.conditional_headers(record) == {
+        "If-Modified-Since": "Thu, 17 Sep 2026 18:27:16 GMT"
+    }
 
 
 # --- is_due (Expires-driven refresh) ----------------------------------------
@@ -180,6 +213,7 @@ def test_normalize_treats_the_first_entry_as_the_current_model_value() -> None:
     assert first.kind == "model"
     assert first.provider == "met-no"
     assert first.source != first.provider
+    assert first.source == "locationforecast/2.0/complete"
     assert first.requested_at == NOW
     assert first.observed_at != first.requested_at
 
@@ -197,11 +231,18 @@ def test_normalize_maps_instant_variables_to_their_documented_units() -> None:
     first = readings[0]
 
     assert first.values["temperature"].unit == "degC"
+    assert first.values["apparent_temperature"].unit == "degC"
+    assert first.values["dew_point"].unit == "degC"
     assert first.values["relative_humidity"].unit == "percent"
     assert first.values["pressure_msl"].unit == "hPa"
     assert first.values["wind_speed"].unit == "m_s"
     assert first.values["wind_direction"].unit == "deg"
     assert first.values["cloud_cover"].unit == "percent"
+    assert first.values["cloud_cover_low"].unit == "percent"
+    assert first.values["cloud_cover_medium"].unit == "percent"
+    assert first.values["cloud_cover_high"].unit == "percent"
+    assert first.values["fog"].unit == "percent"
+    assert first.values["uv_index_clear_sky"].unit == "index"
     assert first.values["precipitation"].unit == "mm"
     assert first.values["weather_code"].unit == "code"
     assert isinstance(first.values["weather_code"].value, str)
@@ -211,6 +252,65 @@ def test_normalize_maps_instant_variables_to_their_documented_units() -> None:
     instant = first_entry["data"]["instant"]["details"]
     assert first.values["temperature"].value == instant["air_temperature"]
     assert first.values["temperature"].original_unit == "celsius"
+
+
+def test_normalize_maps_the_next_6_hours_min_max_and_disambiguates_precipitation() -> None:
+    """air_temperature_max/min map directly; precipitation_amount repeats across
+    next_1_hours and next_6_hours in the same entry, so the 6-hour figure is
+    kept under a disambiguated fallback id instead of being overwritten."""
+    provider = MetNoProvider()
+    readings = provider.normalize(_fetch_record())
+
+    payload = json.loads(_BODY)
+    timeseries = payload["properties"]["timeseries"]
+    entry_with_both = next(
+        (index, entry)
+        for index, entry in enumerate(timeseries)
+        if "precipitation_amount" in entry["data"].get("next_1_hours", {}).get("details", {})
+        and "precipitation_amount" in entry["data"].get("next_6_hours", {}).get("details", {})
+    )
+    index, entry = entry_with_both
+    reading = readings[index]
+
+    assert reading.values["temperature_max"].unit == "degC"
+    assert reading.values["temperature_min"].unit == "degC"
+    assert (
+        reading.values["temperature_max"].value
+        == entry["data"]["next_6_hours"]["details"]["air_temperature_max"]
+    )
+
+    one_hour = entry["data"]["next_1_hours"]["details"]["precipitation_amount"]
+    six_hour = entry["data"]["next_6_hours"]["details"]["precipitation_amount"]
+    assert reading.values["precipitation"].value == one_hour
+    fallback = reading.values["x_precipitation_amount_next_6_hours"]
+    assert fallback.value == six_hour
+    assert fallback.original_value == six_hour
+    assert fallback.unit == "mm"
+
+
+def test_normalize_drops_no_provider_value_from_instant_or_next_1_hours() -> None:
+    """Every key in the fixture's first instant.details (and next_1_hours.details)
+    appears in the reading's values under some id — known vocabulary id or a
+    x_<name> fallback — per docs/weather-api.md section 4's 'no value dropped'
+    rule."""
+    provider = MetNoProvider()
+    readings = provider.normalize(_fetch_record())
+    first_values = readings[0].values
+
+    payload = json.loads(_BODY)
+    first_entry = payload["properties"]["timeseries"][0]
+    instant_details = first_entry["data"]["instant"]["details"]
+    next_1h_details = first_entry["data"].get("next_1_hours", {}).get("details", {})
+
+    for raw_key, raw_value in instant_details.items():
+        expected_id, _ = _INSTANT_VARIABLES.get(raw_key, (f"x_{raw_key}", None))
+        assert expected_id in first_values, f"{raw_key!r} (as {expected_id!r}) was dropped"
+        assert first_values[expected_id].original_value == raw_value
+
+    for raw_key, raw_value in next_1h_details.items():
+        expected_id = "precipitation" if raw_key == "precipitation_amount" else f"x_{raw_key}"
+        assert expected_id in first_values, f"{raw_key!r} (as {expected_id!r}) was dropped"
+        assert first_values[expected_id].original_value == raw_value
 
 
 def test_normalize_is_pure_and_re_derivable() -> None:

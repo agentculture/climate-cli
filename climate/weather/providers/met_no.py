@@ -16,13 +16,22 @@ the last response's ``Last-Modified`` verbatim). Rather than silently
 working around that gap, :meth:`MetNoProvider.build_requests` accepts an
 additional, optional ``last_fetch`` keyword (default ``None``, so every
 existing call site that only passes ``location``/``settings`` keeps
-working), and :meth:`MetNoProvider.conditional_headers` is a small, public
-helper a scheduler can call on its own to get the same value without
-needing the extra parameter. See this task's final report for exactly how
-a scheduler should wire this up.
+working). The scheduler instead calls :meth:`MetNoProvider.conditional_headers`
+itself — a small, public helper returning a header mapping it merges
+straight into the request headers it sends — so ``build_requests`` always
+sets its ``User-Agent`` header regardless of which path is used.
 
 Coordinates are sent with at most 4 decimal places — MET Norway's terms cap
 request precision there — even if a location was configured with more.
+
+Every provider value this endpoint returns is kept (docs/weather-api.md
+section 4's "no provider value is dropped" rule): a variable with a shared
+vocabulary row is emitted under that id; one without gets ``x_<name>`` with
+its original value/unit verbatim. ``precipitation_amount`` is the one key
+the ``complete`` product repeats across two windows in the same entry
+(``next_1_hours`` and ``next_6_hours``) — the hourly one is the vocabulary's
+``precipitation``, the 6-hour one is disambiguated as
+``x_precipitation_amount_next_6_hours`` so neither is silently dropped.
 """
 
 from __future__ import annotations
@@ -49,17 +58,57 @@ _ENDPOINT = "https://api.met.no/weatherapi/locationforecast/2.0/complete"
 _REPO_URL = "https://github.com/agentculture/climate-cli"
 _MAX_COORDINATE_DECIMALS = 4
 
-# met-no variable id -> (our variable id, our unit id). Every one of these is
-# read from ``data.instant.details``; the raw value and met-no's own unit
-# (from ``properties.meta.units``) are kept as the reading's original pair.
+# met-no variable id -> (our vocabulary variable id, our unit id). Read from
+# ``data.instant.details``; the raw value and met-no's own unit (from
+# ``properties.meta.units``) are kept as the reading's original pair.
 _INSTANT_VARIABLES: dict[str, tuple[str, str]] = {
     "air_temperature": ("temperature", "degC"),
+    "apparent_air_temperature": ("apparent_temperature", "degC"),
+    "dew_point_temperature": ("dew_point", "degC"),
     "relative_humidity": ("relative_humidity", "percent"),
     "air_pressure_at_sea_level": ("pressure_msl", "hPa"),
     "wind_speed": ("wind_speed", "m_s"),
+    "wind_speed_of_gust": ("wind_gust", "m_s"),
     "wind_from_direction": ("wind_direction", "deg"),
     "cloud_area_fraction": ("cloud_cover", "percent"),
+    "cloud_area_fraction_low": ("cloud_cover_low", "percent"),
+    "cloud_area_fraction_medium": ("cloud_cover_medium", "percent"),
+    "cloud_area_fraction_high": ("cloud_cover_high", "percent"),
+    "fog_area_fraction": ("fog", "percent"),
+    "ultraviolet_index_clear_sky": ("uv_index_clear_sky", "index"),
 }
+
+# next_6_hours.details variable id -> (our vocabulary variable id, unit id).
+_NEXT_6_HOURS_VARIABLES: dict[str, tuple[str, str]] = {
+    "air_temperature_max": ("temperature_max", "degC"),
+    "air_temperature_min": ("temperature_min", "degC"),
+}
+
+# Unit ids from docs/weather-api.md section 4.1 that a fallback x_ variable
+# can carry verbatim when met-no's own unit happens to already match one.
+_KNOWN_UNIT_IDS = frozenset(
+    {"degC", "percent", "hPa", "m_s", "deg", "mm", "w_m2", "m", "index", "code"}
+)
+
+# met-no's own unit string (properties.meta.units) -> our unit id, for
+# variables that fall back to x_<name> and have no vocabulary row of their
+# own but whose unit is still one we recognise.
+_UNIT_ALIASES = {
+    "celsius": "degC",
+    "%": "percent",
+    "m/s": "m_s",
+    "degrees": "deg",
+    "mm": "mm",
+    "1": "index",
+}
+
+
+def _fallback_unit(met_no_unit: str | None) -> str:
+    if met_no_unit in _KNOWN_UNIT_IDS:
+        return met_no_unit  # type: ignore[return-value]
+    if met_no_unit in _UNIT_ALIASES:
+        return _UNIT_ALIASES[met_no_unit]
+    return "other"
 
 
 def _round_coordinate(value: float) -> str:
@@ -86,40 +135,92 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
+def _measurement(raw: Any, unit_id: str, original_unit: str | None) -> Measurement:
+    value: Any = raw
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    return Measurement(value=value, unit=unit_id, original_value=raw, original_unit=original_unit)
+
+
+def _add_known_or_fallback(
+    values: dict[str, Measurement],
+    raw_key: str,
+    raw: Any,
+    known: dict[str, tuple[str, str]],
+    units: dict[str, str],
+    *,
+    fallback_id: str | None = None,
+) -> None:
+    """Emit ``raw_key`` under its vocabulary id, or ``x_<name>`` when unknown.
+
+    ``fallback_id`` overrides the generated ``x_<raw_key>`` id — used to
+    disambiguate a provider key that legitimately repeats across two
+    forecast windows in the same entry (``precipitation_amount`` in both
+    ``next_1_hours`` and ``next_6_hours``).
+    """
+    original_unit = units.get(raw_key)
+    if fallback_id is None and raw_key in known:
+        variable_id, unit_id = known[raw_key]
+        values[variable_id] = _measurement(raw, unit_id, original_unit)
+        return
+    variable_id = fallback_id or f"x_{raw_key}"
+    values[variable_id] = _measurement(raw, _fallback_unit(original_unit), original_unit)
+
+
 def _entry_values(entry: dict[str, Any], units: dict[str, str]) -> dict[str, Measurement]:
-    """Build the ``values`` map for one timeseries entry."""
+    """Build the ``values`` map for one timeseries entry.
+
+    Every numeric/coded key met-no returns is kept (docs/weather-api.md
+    section 4): known keys map to their vocabulary id, unknown ones fall
+    back to ``x_<name>``.
+    """
     values: dict[str, Measurement] = {}
     data = entry.get("data") or {}
+
     instant = (data.get("instant") or {}).get("details") or {}
-    for met_key, (variable_id, unit_id) in _INSTANT_VARIABLES.items():
-        if met_key not in instant:
+    for raw_key, raw in instant.items():
+        _add_known_or_fallback(values, raw_key, raw, _INSTANT_VARIABLES, units)
+
+    next_1h = (data.get("next_1_hours") or {}).get("details") or {}
+    for raw_key, raw in next_1h.items():
+        if raw_key == "precipitation_amount":
+            values["precipitation"] = _measurement(raw, "mm", units.get(raw_key, "mm"))
             continue
-        raw = instant[met_key]
-        values[variable_id] = Measurement(
-            value=float(raw),
-            unit=unit_id,
-            original_value=raw,
-            original_unit=units.get(met_key),
-        )
+        _add_known_or_fallback(values, raw_key, raw, {}, units)
 
-    next_1h = data.get("next_1_hours") or {}
-    precipitation = (next_1h.get("details") or {}).get("precipitation_amount")
-    if precipitation is not None:
-        values["precipitation"] = Measurement(
-            value=float(precipitation),
-            unit="mm",
-            original_value=precipitation,
-            original_unit=units.get("precipitation_amount", "mm"),
-        )
+    next_6h = (data.get("next_6_hours") or {}).get("details") or {}
+    for raw_key, raw in next_6h.items():
+        if raw_key == "precipitation_amount":
+            if "precipitation" in values:
+                # Same provider key already used by next_1_hours in this
+                # entry — the 6-hour figure is real data too, keep it under
+                # a disambiguated fallback id rather than dropping it.
+                _add_known_or_fallback(
+                    values,
+                    raw_key,
+                    raw,
+                    {},
+                    units,
+                    fallback_id="x_precipitation_amount_next_6_hours",
+                )
+            else:
+                values["precipitation"] = _measurement(raw, "mm", units.get(raw_key, "mm"))
+            continue
+        _add_known_or_fallback(values, raw_key, raw, _NEXT_6_HOURS_VARIABLES, units)
 
-    symbol_code = (next_1h.get("summary") or {}).get("symbol_code")
-    if symbol_code:
-        values["weather_code"] = Measurement(
-            value=symbol_code,
-            unit="code",
-            original_value=symbol_code,
-            original_unit=None,
-        )
+    next_12h = (data.get("next_12_hours") or {}).get("details") or {}
+    for raw_key, raw in next_12h.items():
+        _add_known_or_fallback(values, raw_key, raw, {}, units)
+
+    # weather_code: the finest-grained symbol available for this entry.
+    for block in ("next_1_hours", "next_6_hours", "next_12_hours"):
+        symbol_code = ((data.get(block) or {}).get("summary") or {}).get("symbol_code")
+        if symbol_code:
+            values["weather_code"] = Measurement(
+                value=symbol_code, unit="code", original_value=symbol_code, original_unit=None
+            )
+            break
+
     return values
 
 
@@ -166,37 +267,44 @@ class MetNoProvider(WeatherProvider):
         lat = _round_coordinate(location.latitude)
         lon = _round_coordinate(location.longitude)
         url = f"{_ENDPOINT}?lat={lat}&lon={lon}"
+        headers = {"User-Agent": _user_agent()}
+        if_modified_since = self.conditional_headers(last_fetch).get("If-Modified-Since")
         return (
             RequestSpec(
                 provider_id=self.id,
                 location_label=location.label,
                 url=url,
-                headers={"User-Agent": _user_agent()},
-                if_modified_since=self.conditional_headers(last_fetch),
+                headers=headers,
+                if_modified_since=if_modified_since,
                 purpose="current",
             ),
         )
 
     @staticmethod
-    def conditional_headers(last_fetch: FetchRecord | None) -> str | None:
-        """The ``Last-Modified`` of ``last_fetch``, reusable verbatim as
-        ``If-Modified-Since`` (both are RFC 7231 dates), or ``None``.
+    def conditional_headers(last_fetch: FetchRecord | None) -> dict[str, str]:
+        """Header(s) a conditional GET should carry, given the last fetch.
 
-        Public so a scheduler that cannot pass ``last_fetch`` into
-        :meth:`build_requests` can still compute this value itself and
-        merge it into the :class:`RequestSpec` it gets back.
+        Returns ``{"If-Modified-Since": <that record's Last-Modified>}``
+        when ``last_fetch`` has a usable one, else ``{}`` (including when
+        ``last_fetch`` is ``None`` or was an error with no headers). Reads
+        ``last_fetch.cache_headers`` (the store's :class:`FetchRecord`
+        field name) case-insensitively.
+
+        The scheduler calls this directly and merges the result into the
+        request headers it sends — it does not pass ``last_fetch`` into
+        :meth:`build_requests`.
         """
         if last_fetch is None:
-            return None
+            return {}
         headers = getattr(last_fetch, "cache_headers", None)
         if headers is None:
             headers = getattr(last_fetch, "headers", None)
         if not headers:
-            return None
+            return {}
         for key, value in headers.items():
             if key.lower() == "last-modified":
-                return value
-        return None
+                return {"If-Modified-Since": value}
+        return {}
 
     def normalize(self, fetch_record: FetchRecord) -> tuple[Reading, ...]:
         """First timeseries entry is the current model value; the rest forecast."""
@@ -227,7 +335,7 @@ class MetNoProvider(WeatherProvider):
             readings.append(
                 Reading(
                     provider=self.id,
-                    source="locationforecast",
+                    source="locationforecast/2.0/complete",
                     model=None,
                     location=location_label,
                     observed_at=observed_at,
