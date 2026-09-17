@@ -327,7 +327,11 @@ def _extract_values(payload: dict[str, Any]) -> dict[str, Measurement]:
     if base:
         values["x_base"] = Measurement(value=str(base), unit="code", original_value=str(base))
 
-    for key in ("timezone", "id", "cod"):
+    # The top-level ``id`` is OpenWeather's CITY id for the nearest town (a
+    # GeoNames id): it resolves to a place name, so it is location data and is
+    # never emitted, exactly like ``name``, ``coord`` and ``sys.country``.
+    # Found on the first live payload.
+    for key in ("timezone", "cod"):
         raw = payload.get(key)
         if raw is not None:
             _add_measurement(values, f"x_{key}", raw, "other", original_value=raw)

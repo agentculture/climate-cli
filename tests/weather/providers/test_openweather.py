@@ -289,7 +289,8 @@ def test_normalize_drops_no_provider_value_except_location(
     # Vocabulary/x_ ids account for every field except coord/name/sys.country.
     assert "x_base" in values
     assert "x_timezone" in values
-    assert "x_id" in values
+    # The city id identifies the nearest town: location data, never emitted.
+    assert "x_id" not in values
     assert "x_cod" in values
     assert "x_sys_type" in values
     assert "x_sys_id" in values
