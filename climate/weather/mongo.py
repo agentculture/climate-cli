@@ -132,6 +132,8 @@ _DEFAULT_DB_NAME = "weather"
 FETCHES_COLLECTION = "fetches"
 READINGS_COLLECTION = "readings"
 LEASES_COLLECTION = "leases"
+META_COLLECTION = "meta"
+HEARTBEAT_DOC_ID = "tracker-heartbeat"
 
 
 # --- URI guard --------------------------------------------------------------
@@ -348,13 +350,46 @@ class MongoWeatherStore:
     database; opening them is :func:`connect`'s job, not this class's.
     """
 
-    def __init__(self, fetches: Any, readings: Any) -> None:
+    def __init__(self, fetches: Any, readings: Any, *, meta: Any = None, db: Any = None) -> None:
         self._fetches = fetches
         self._readings = readings
+        self._meta = meta
+        self._db = db
         # (provider, location, requested_at desc): the shape every filtered
         # iter_fetches/latest_fetch/count_fetches query above narrows by.
         self._fetches.create_index([("provider", 1), ("location", 1), ("requested_at", -1)])
         self._readings.create_index([("fetch_id", 1)])
+
+    # --- optional service extensions (see InMemoryWeatherStore) -----------
+
+    def save_heartbeat(self, version: str, at: datetime) -> None:
+        """Upsert the single tracker-heartbeat document."""
+        if self._meta is None:
+            return
+        self._meta.update_one(
+            {"_id": HEARTBEAT_DOC_ID},
+            {"$set": {"version": version, "at": _truncate_to_millis(at)}},
+            upsert=True,
+        )
+
+    def latest_heartbeat(self) -> dict[str, Any] | None:
+        if self._meta is None:
+            return None
+        document = self._meta.find_one({"_id": HEARTBEAT_DOC_ID})
+        if not document:
+            return None
+        return {"version": document.get("version"), "at": document.get("at")}
+
+    def size_bytes(self) -> int | None:
+        """Database size on disk from ``dbstats``; ``None`` when unavailable."""
+        if self._db is None:
+            return None
+        try:
+            stats = self._db.command("dbstats")
+        except Exception:  # noqa: BLE001 - health must never fail on stats
+            return None
+        size = stats.get("storageSize") or stats.get("dataSize")
+        return int(size) if size is not None else None
 
     # --- raw fetch records ----------------------------------------------
 
@@ -518,6 +553,24 @@ class MongoWeatherStore:
 
 
 # --- tracker lease -------------------------------------------------------------
+
+
+def build_store(uri: str | None = None) -> MongoWeatherStore:
+    """Connect (through the one choke-point) and return the service's store.
+
+    Used by the tracker and the web service. The URI comes from
+    ``WEATHER_MONGO_URI`` unless given; the guard in :func:`resolve_uri`
+    still applies.
+    """
+    db = database(connect(uri))
+    return MongoWeatherStore(
+        db[FETCHES_COLLECTION], db[READINGS_COLLECTION], meta=db[META_COLLECTION], db=db
+    )
+
+
+def lease_collection(uri: str | None = None) -> Any:
+    """The collection holding the single-tracker lease document."""
+    return database(connect(uri))[LEASES_COLLECTION]
 
 
 def _is_duplicate_key_error(exc: Exception) -> bool:

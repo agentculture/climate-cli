@@ -466,15 +466,18 @@ def _store_backend(store: WeatherStore) -> str:
     return "mongo"
 
 
-def _store_size_bytes(_store: WeatherStore) -> None:
-    # GAP: no disk-size query exists on the WeatherStore protocol.
-    return None
+def _store_size_bytes(store: WeatherStore) -> int | None:
+    # Optional store extension (not on the WeatherStore protocol).
+    size_bytes = getattr(store, "size_bytes", None)
+    return size_bytes() if callable(size_bytes) else None
 
 
-def _tracker_version(_store: WeatherStore) -> None:
-    # GAP: neither FetchRecord nor Reading carries a recorded "climate"
-    # package version, and the store exposes no heartbeat API.
-    return None
+def _tracker_version(store: WeatherStore) -> str | None:
+    # The tracker writes a heartbeat carrying its package version; doctor
+    # compares it with the host CLI's version to detect a stale image.
+    latest_heartbeat = getattr(store, "latest_heartbeat", None)
+    heartbeat = latest_heartbeat() if callable(latest_heartbeat) else None
+    return str(heartbeat["version"]) if heartbeat and heartbeat.get("version") else None
 
 
 @_guarded

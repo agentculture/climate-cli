@@ -81,3 +81,30 @@ def test_request_spec_never_prints_a_live_secret() -> None:
         assert "t0k3nvalue" not in rendered
     assert "s3cr3tkey" in spec.url  # the real fetch still gets the key
     assert "s3cr3tkey" not in spec.redacted_url
+
+
+def test_heartbeat_round_trips_through_both_stores_and_the_health_route() -> None:
+    from climate.weather.mongo import MongoWeatherStore
+    from climate.weather.store import InMemoryWeatherStore
+    from climate.weather.web import api
+    from tests.weather.test_mongo import FakeCollection
+
+    stores = [
+        InMemoryWeatherStore(),
+        MongoWeatherStore(FakeCollection(), FakeCollection(), meta=FakeCollection()),
+    ]
+    for store in stores:
+        assert store.latest_heartbeat() is None
+        store.save_heartbeat("9.9.9", NOW)
+        assert store.latest_heartbeat()["version"] == "9.9.9"
+        config = weather_config.WeatherConfig(locations={}, providers={})
+        status, body = api.health(store, config, [], {}, NOW)
+        assert status == 200
+        assert body["tracker_version"] == "9.9.9"
+
+
+def test_web_service_store_factory_exists() -> None:
+    from climate.weather import mongo
+
+    assert callable(mongo.build_store)
+    assert callable(mongo.lease_collection)

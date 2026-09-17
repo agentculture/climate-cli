@@ -578,6 +578,25 @@ class InMemoryWeatherStore:
     def __init__(self) -> None:
         self._fetches: dict[str, FetchRecord] = {}
         self._readings: dict[str, Reading] = {}
+        self._heartbeat: dict[str, Any] | None = None
+
+    # --- optional service extensions (not part of the WeatherStore protocol) --
+    #
+    # The tracker records a heartbeat carrying its package version so doctor
+    # can detect a stale image; callers reach these with ``getattr`` and
+    # tolerate their absence.
+
+    def save_heartbeat(self, version: str, at: datetime) -> None:
+        """Record that a tracker running ``version`` was alive at ``at`` (UTC)."""
+        self._heartbeat = {"version": version, "at": at}
+
+    def latest_heartbeat(self) -> dict[str, Any] | None:
+        """The newest tracker heartbeat as ``{"version", "at"}``, or ``None``."""
+        return dict(self._heartbeat) if self._heartbeat else None
+
+    def size_bytes(self) -> int | None:
+        """Bytes of stored response bodies (the Mongo store reports dbstats)."""
+        return sum(len(record.body) for record in self._fetches.values())
 
     # --- lifecycle ------------------------------------------------------
 
