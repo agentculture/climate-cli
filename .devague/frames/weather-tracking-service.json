@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-17T17:04:14Z",
-  "updated": "2026-09-17T19:09:49Z",
+  "updated": "2026-09-17T19:32:51Z",
   "claims": [
     {
       "id": "c1",
@@ -1321,6 +1321,17 @@
       "skipped_check": "brief task agents to never install or remove machine-level tooling (npx/pip/apt installs, shared caches) and to report a missing tool instead",
       "refs": [
         "t22"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "The main agent's TDD merge helper reported a clean merge, ran the 'after' tests and removed the worktree for task t25 although git had refused the merge (uv.lock was dirty in the working tree and t25 commits uv.lock): the 'after' run was testing the unmerged branch. Caught at once because the test count (692) and version (0.4.0) had not moved; the helper now verifies the task branch is an ancestor of HEAD, and all 27 task branches were re-checked as merged",
+      "skipped_check": "verify the merge commit exists (git merge-base --is-ancestor) before treating the after-merge test run as evidence",
+      "refs": [
+        "t25"
       ],
       "origin": "llm",
       "status": "proposed"
