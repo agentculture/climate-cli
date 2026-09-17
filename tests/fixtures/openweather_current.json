@@ -1,0 +1,32 @@
+{
+  "coord": {"lon": -0.0005, "lat": 51.4769},
+  "weather": [
+    {"id": 803, "main": "Clouds", "description": "broken clouds", "icon": "04d"}
+  ],
+  "base": "stations",
+  "main": {
+    "temp": 285.32,
+    "feels_like": 284.51,
+    "temp_min": 283.94,
+    "temp_max": 286.21,
+    "pressure": 1015,
+    "humidity": 72,
+    "sea_level": 1015,
+    "grnd_level": 1011
+  },
+  "visibility": 10000,
+  "wind": {"speed": 3.6, "deg": 250, "gust": 5.1},
+  "clouds": {"all": 75},
+  "dt": 1758131446,
+  "sys": {
+    "type": 2,
+    "id": 2075535,
+    "country": "GB",
+    "sunrise": 1758087496,
+    "sunset": 1758133192
+  },
+  "timezone": 3600,
+  "id": 0,
+  "name": "Example-Fixture-City",
+  "cod": 200
+}
