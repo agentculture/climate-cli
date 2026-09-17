@@ -6,6 +6,7 @@ for every test coordinate; never the user's real location.
 
 from __future__ import annotations
 
+import ast
 import json
 
 import pytest
@@ -16,11 +17,42 @@ from climate.weather import config as weather_config
 GREENWICH_LAT = 51.4800001
 GREENWICH_LON = -0.0000001
 
+# Minimum decimal digits (in the literal's own source text, not its parsed
+# float value) for a number to be treated as coordinate-shaped. A plain
+# timeout/backoff/jitter constant such as 10.0, 0.5 or 0.25 has at most two
+# decimal digits; a latitude/longitude such as 51.4769 needs the precision
+# a short constant never does.
+_MIN_COORDINATE_DECIMAL_DIGITS = 3
+
 
 def _write_config(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def _find_coordinate_like_literals(source: str, filename: str = "<test>"):
+    """Return (filename, source_text) for float literals shaped like a coordinate.
+
+    A literal counts only when its OWN SOURCE TEXT (not its parsed float
+    value, which loses trailing/rounding information) has at least
+    ``_MIN_COORDINATE_DECIMAL_DIGITS`` decimal digits and the literal's
+    value lies within a plausible latitude/longitude range.
+    """
+    tree = ast.parse(source, filename=filename)
+    hits = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            text = ast.get_source_segment(source, node)
+            if text is None:
+                continue
+            _, _, decimals = text.partition(".")
+            decimals = decimals.rstrip("jJ")  # tolerate stray complex suffixes
+            if len(decimals) < _MIN_COORDINATE_DECIMAL_DIGITS:
+                continue
+            if -180.0 <= node.value <= 180.0:
+                hits.append((filename, text))
+    return hits
 
 
 def _base_config(**overrides):
@@ -124,22 +156,29 @@ class TestNoLocationConfigured:
 
         assert exc_info.value.code == 2
 
+    def test_coordinate_literal_detector_flags_coordinates_not_plain_constants(self, tmp_path):
+        sample = tmp_path / "sample.py"
+        sample.write_text(
+            "DEFAULT_TIMEOUT = 10.0\n" "JITTER = 0.5\n" "BACKOFF = 0.25\n" "HOME_LAT = 51.4769\n",
+            encoding="utf-8",
+        )
+
+        hits = _find_coordinate_like_literals(sample.read_text(encoding="utf-8"), str(sample))
+
+        flagged_texts = [text for _, text in hits]
+        assert "51.4769" in flagged_texts
+        assert "10.0" not in flagged_texts
+        assert "0.5" not in flagged_texts
+        assert "0.25" not in flagged_texts
+
     def test_no_default_place_exists_anywhere_in_the_package(self):
-        import ast
         import pathlib
 
         package_root = pathlib.Path(weather_config.__file__).resolve().parent
         offenders = []
         for py_file in package_root.rglob("*.py"):
-            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Constant) and isinstance(node.value, float):
-                    # A latitude/longitude-shaped float literal (has a
-                    # fractional component and lies in a plausible range)
-                    # would indicate a hard-coded default place.
-                    value = node.value
-                    if -180.0 <= value <= 180.0 and value not in (0.0,):
-                        offenders.append((py_file, value))
+            source = py_file.read_text(encoding="utf-8")
+            offenders.extend(_find_coordinate_like_literals(source, str(py_file)))
         assert offenders == [], f"possible hard-coded coordinate literals: {offenders}"
 
 
