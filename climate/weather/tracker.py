@@ -92,6 +92,10 @@ _LEASE_HELD_REMEDIATION = (
     "wait for the other tracker to exit and its lease to expire, or stop it, "
     "before starting a new one"
 )
+_STORE_UNREACHABLE_REMEDIATION = (
+    "check that the weather store is reachable and writable "
+    "('climate stack status'), then start the tracker again"
+)
 
 
 def _configure_logging(logger: logging.Logger) -> None:
@@ -149,6 +153,110 @@ def _save_heartbeat(store: Any) -> None:
     save = getattr(store, "save_heartbeat", None)
     if callable(save):
         save(PACKAGE_VERSION, datetime.now(UTC))
+
+
+def _release_lease(lease: MongoLease) -> None:
+    """Give the lease back, whatever happened. Never raises.
+
+    The scheduler releases the lease itself when its own ``run`` finishes,
+    and the lease is idempotent, so calling this as well is free — but it is
+    the only release on the paths where the scheduler was never reached.
+    """
+    try:
+        lease.release()
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.warning("releasing the fetch lease failed: %s", exc)
+
+
+def _record_start_heartbeat(store: Any) -> None:
+    """Write the "on start" heartbeat, turning a store failure into a CliError."""
+    try:
+        _save_heartbeat(store)
+    except Exception as exc:
+        detail = weather_http.redact(f"{type(exc).__name__}: {exc}") or "the store rejected it"
+        raise CliError(
+            code=EXIT_ENV_ERROR,
+            message=f"recording the tracker heartbeat failed: {detail}",
+            remediation=_STORE_UNREACHABLE_REMEDIATION,
+        ) from exc
+
+
+def _start_tracking(
+    *,
+    store: Any,
+    providers: list[Any],
+    config: Any,
+    environ: Mapping[str, str],
+    fetch: Any,
+    lease: MongoLease,
+    stop: Any,
+    base_tick_seconds: int,
+) -> None:
+    """Heartbeat, install the signal handlers and drive the loop to its end.
+
+    Called with the lease already held, and with the caller releasing it on
+    every exit path. A traceback reaching the operator is a bug here, so
+    anything unexpected becomes a :class:`CliError` with an exit code.
+    """
+    try:
+        _record_start_heartbeat(store)
+        _drive_scheduler(
+            store=store,
+            providers=providers,
+            config=config,
+            environ=environ,
+            fetch=fetch,
+            lease=lease,
+            stop=stop,
+            base_tick_seconds=base_tick_seconds,
+        )
+    except CliError:
+        raise
+    except Exception as exc:
+        detail = weather_http.redact(f"{type(exc).__name__}: {exc}") or type(exc).__name__
+        raise CliError(
+            code=EXIT_ENV_ERROR,
+            message=f"the tracker stopped with an unexpected error: {detail}",
+            remediation=_STORE_UNREACHABLE_REMEDIATION,
+        ) from exc
+
+
+def _drive_scheduler(
+    *,
+    store: Any,
+    providers: list[Any],
+    config: Any,
+    environ: Mapping[str, str],
+    fetch: Any,
+    lease: MongoLease,
+    stop: Any,
+    base_tick_seconds: int,
+) -> None:
+    """Run the scheduler in the foreground with SIGTERM/SIGINT wired to stop."""
+    stop_event = stop if stop is not None else threading.Event()
+
+    def _on_signal(signum: int, frame: Any) -> None:
+        del signum, frame
+        stop_event.set()
+
+    previous_sigterm = signal.signal(signal.SIGTERM, _on_signal)
+    previous_sigint = signal.signal(signal.SIGINT, _on_signal)
+    try:
+        scheduler = _HeartbeatScheduler(
+            store=store,
+            providers=providers,
+            config=config,
+            fetch=fetch if fetch is not None else weather_http.fetch,
+            lease=lease,
+            env=environ,
+            base_tick_seconds=base_tick_seconds,
+            logger=LOGGER,
+            heartbeat=lambda: _save_heartbeat(store),
+        )
+        scheduler.run(stop=stop_event)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        signal.signal(signal.SIGINT, previous_sigint)
 
 
 class _HeartbeatScheduler(weather_scheduler.Scheduler):
@@ -230,32 +338,23 @@ def main(
                 remediation=_LEASE_HELD_REMEDIATION,
             )
 
-        _save_heartbeat(store)
-
-        stop_event = stop if stop is not None else threading.Event()
-
-        def _on_signal(signum: int, frame: Any) -> None:
-            del signum, frame
-            stop_event.set()
-
-        previous_sigterm = signal.signal(signal.SIGTERM, _on_signal)
-        previous_sigint = signal.signal(signal.SIGINT, _on_signal)
+        # Everything from here on runs while this process holds the lease, so
+        # every exit path — including a startup heartbeat that raises, or a
+        # scheduler that cannot even be constructed — must give it back.
+        # Otherwise a replacement tracker is locked out until the TTL expires.
         try:
-            scheduler = _HeartbeatScheduler(
+            _start_tracking(
                 store=store,
                 providers=providers,
                 config=config,
-                fetch=fetch if fetch is not None else weather_http.fetch,
+                environ=environ,
+                fetch=fetch,
                 lease=lease,
-                env=environ,
+                stop=stop,
                 base_tick_seconds=base_tick_seconds,
-                logger=LOGGER,
-                heartbeat=lambda: _save_heartbeat(store),
             )
-            scheduler.run(stop=stop_event)
         finally:
-            signal.signal(signal.SIGTERM, previous_sigterm)
-            signal.signal(signal.SIGINT, previous_sigint)
+            _release_lease(lease)
     except CliError as exc:
         emit_error(exc, json_mode=False)
         return exc.code

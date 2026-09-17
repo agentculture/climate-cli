@@ -112,11 +112,21 @@ class StopAfterTicks:
         return self.is_set()
 
 
+class HeartbeatFailingStore(InMemoryWeatherStore):
+    """A store whose very first heartbeat write fails.
+
+    Stands in for a Mongo that accepted the lease document and then became
+    unwritable: the tracker must still hand the lease back.
+    """
+
+    def save_heartbeat(self, version: str, at: Any) -> None:
+        raise RuntimeError("the store rejected the heartbeat")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_config_path(tmp_path, monkeypatch):
     """Point the tracker's config loader at a private path for every test."""
     monkeypatch.setenv(weather_config.CONFIG_PATH_ENV_VAR, str(tmp_path / "weather.json"))
-    yield
 
 
 def test_no_location_configured_exits_2_with_a_hint_and_makes_no_request(tmp_path, capsys):
@@ -217,6 +227,37 @@ def test_lease_is_released_when_the_run_finishes(tmp_path):
     from climate.weather.mongo import LEASE_DOC_ID
 
     assert LEASE_DOC_ID not in collection.documents
+
+
+def test_a_failing_startup_heartbeat_releases_the_lease_and_exits_cleanly(tmp_path, capsys):
+    """Regression: the lease must survive nothing — not even a dead store.
+
+    ``main()`` acquires the lease before the scheduler exists, so a failure
+    between the acquire and the scheduler's own release used to leave the
+    lease document in place and lock every replacement tracker out until the
+    TTL expired.
+    """
+    _write_config(tmp_path / "weather.json")
+    fetch = FakeFetch()
+    collection = FakeCollection()
+
+    code = tracker.main(
+        store_factory=HeartbeatFailingStore,
+        lease_collection_factory=lambda: collection,
+        fetch=fetch,
+    )
+
+    from datetime import UTC, datetime
+
+    from climate.weather import mongo
+    from climate.weather.mongo import LEASE_DOC_ID
+
+    assert code == EXIT_ENV_ERROR
+    assert not fetch.calls
+    assert "hint:" in capsys.readouterr().err
+    assert LEASE_DOC_ID not in collection.documents
+    # A replacement tracker can take the lease straight away.
+    assert mongo.acquire_lease(collection, "replacement", 10_000, now=datetime.now(UTC))
 
 
 def test_log_line_never_carries_the_openweather_style_secret(tmp_path, monkeypatch, caplog):
