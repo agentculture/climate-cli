@@ -106,7 +106,7 @@ services:
     volumes:
       - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
     ports:
-      - "${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8790}:8790"
+      - "${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8095}:8095"
     depends_on:
       weather-mongodb:
         condition: service_healthy

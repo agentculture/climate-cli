@@ -142,7 +142,7 @@ def test_web_service_publishes_on_configurable_bind_and_port(compose):
     assert "CLIMATE_WEB_PORT" in joined
     # Default bind must be loopback-only.
     assert "127.0.0.1" in joined
-    assert "8790" in joined
+    assert "8095" in joined
 
 
 def test_every_service_has_json_file_logging_with_limits(compose):
@@ -198,7 +198,7 @@ def test_env_example_documents_every_required_variable():
         value = value.strip()
         if not value:
             continue
-        safe_markers = ("REPLACE", "127.0.0.1", "8790", "./", "weather-mongodb")
+        safe_markers = ("REPLACE", "127.0.0.1", "8095", "./", "weather-mongodb")
         assert any(
             marker in value for marker in safe_markers
         ), f"suspicious non-placeholder value in weather.env.example: {line!r}"
