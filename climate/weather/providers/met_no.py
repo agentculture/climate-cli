@@ -10,16 +10,14 @@ from the stored fetch record's ``cache_headers`` and applies the interval
 floor, so this module does not override it.
 
 The provider contract's :meth:`WeatherProvider.build_requests` is called
-with only ``(location, settings)`` — it has no way to see the *previous*
+with ``(location, settings, env=...)`` — it has no way to see the *previous*
 fetch, which is what a conditional GET needs (``If-Modified-Since`` echoes
-the last response's ``Last-Modified`` verbatim). Rather than silently
-working around that gap, :meth:`MetNoProvider.build_requests` accepts an
-additional, optional ``last_fetch`` keyword (default ``None``, so every
-existing call site that only passes ``location``/``settings`` keeps
-working). The scheduler instead calls :meth:`MetNoProvider.conditional_headers`
-itself — a small, public helper returning a header mapping it merges
-straight into the request headers it sends — so ``build_requests`` always
-sets its ``User-Agent`` header regardless of which path is used.
+the last response's ``Last-Modified`` verbatim). This adapter therefore keeps
+``build_requests`` on exactly the contract's signature and exposes
+:meth:`MetNoProvider.conditional_headers`, a small public helper returning a
+header mapping. The scheduler calls it with the last stored fetch and merges
+the result into the request headers it sends; ``build_requests`` itself
+always sets the identifying ``User-Agent``.
 
 Model run time
 --------------
@@ -302,15 +300,12 @@ class MetNoProvider(WeatherProvider):
         settings: ProviderSettingsLike | None = None,
         *,
         env: Mapping[str, str] | None = None,
-        last_fetch: FetchRecord | None = None,
     ) -> tuple[RequestSpec, ...]:
         """Describe the one GET this provider ever makes for a location.
 
-        ``last_fetch`` is an addition to the abstract signature (default
-        ``None``, so every existing caller keeps working): when the caller
-        can supply the previous fetch, its ``Last-Modified`` becomes this
-        request's ``If-Modified-Since``. A caller that cannot pass it may
-        instead call :meth:`conditional_headers` itself.
+        The conditional ``If-Modified-Since`` header is not set here: this
+        method cannot see the previous fetch. The scheduler adds it from
+        :meth:`conditional_headers`.
 
         ``env`` is accepted for the contract's sake and ignored: MET Norway
         is keyless, so this adapter never reads a credential.
@@ -320,14 +315,12 @@ class MetNoProvider(WeatherProvider):
         lon = _round_coordinate(location.longitude)
         url = f"{_ENDPOINT}?lat={lat}&lon={lon}"
         headers = {"User-Agent": _user_agent()}
-        if_modified_since = self.conditional_headers(last_fetch).get("If-Modified-Since")
         return (
             RequestSpec(
                 provider_id=self.id,
                 location_label=location.label,
                 url=url,
                 headers=headers,
-                if_modified_since=if_modified_since,
                 purpose="current",
             ),
         )

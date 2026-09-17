@@ -126,11 +126,16 @@ def test_build_requests_rounds_coordinates_to_at_most_4_decimals() -> None:
         assert len(decimals) <= 4, f"{part!r} carries more than 4 decimals"
 
 
-def test_build_requests_carries_if_modified_since_from_the_last_fetch() -> None:
-    provider = MetNoProvider()
+def test_conditional_headers_echo_the_last_fetchs_last_modified() -> None:
+    """build_requests keeps the contract's exact signature, so the previous
+    fetch reaches the request through conditional_headers, which the
+    scheduler merges into the headers it sends."""
     last = _fetch_record()
-    spec = provider.build_requests(LOCATION, ProviderSettings(), last_fetch=last)[0]
-    assert spec.if_modified_since == _CACHE_HEADERS["last-modified"]
+    assert MetNoProvider.conditional_headers(last) == {
+        "If-Modified-Since": _CACHE_HEADERS["last-modified"]
+    }
+    spec = MetNoProvider().build_requests(LOCATION, ProviderSettings())[0]
+    assert spec.if_modified_since is None
 
 
 def test_conditional_headers_returns_a_mapping_the_scheduler_merges_in() -> None:
