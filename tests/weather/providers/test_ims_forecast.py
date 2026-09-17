@@ -285,4 +285,7 @@ def test_normalize_is_pure_and_re_derivable() -> None:
     provider = ImsForecastProvider()
     url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
     record = _fetch_record(url)
-    assert provider.normalize(record) == provider.normalize(record)
+    first = provider.normalize(record)
+    second = provider.normalize(record)
+    assert first, "the fixture must normalize to at least one reading"
+    assert second == first

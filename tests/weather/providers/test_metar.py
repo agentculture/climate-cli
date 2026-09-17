@@ -239,4 +239,7 @@ def test_normalize_converts_a_wind_gust_when_the_feed_reports_one() -> None:
 def test_normalize_is_pure_and_re_derivable() -> None:
     provider = MetarProvider()
     record = _fetch_record()
-    assert provider.normalize(record) == provider.normalize(record)
+    first = provider.normalize(record)
+    second = provider.normalize(record)
+    assert first, "the fixture must normalize to at least one reading"
+    assert second == first
