@@ -78,6 +78,21 @@ There is no default location anywhere in the package: with nothing configured,
 the tracker refuses to start (exit 2) rather than silently watching some place
 it picked for you.
 
+**More than one location.** `stations` (metar), `station_ids` (ims) and `cities`
+(ims-forecast) each accept either a plain list, which serves every configured
+location and is the single-location convenience shown above, or a mapping from
+location label to that location's own list:
+
+```json
+"metar": {"enabled": true, "request_params": {"stations": {"home": ["XXXX"], "office": ["YYYY"]}}}
+```
+
+Under a mapping, a location with no entry issues no request for that provider,
+so one place's station is never stored under another place's label. For
+`cities` the list is ordered: the first name present in the feed wins, which
+lets you name your own town first and a larger nearby city as the fallback.
+The names never leave the machine; they are kept only with the stored record.
+
 ## CLI
 
 | Command | What it does |

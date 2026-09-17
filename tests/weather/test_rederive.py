@@ -35,7 +35,7 @@ from climate.weather.providers.openweather import ENV_VAR as OPENWEATHER_ENV_VAR
 from climate.weather.providers.openweather import OpenWeatherProvider
 from climate.weather.rederive import RederiveResult, rederive
 from climate.weather.store import FetchRecord, InMemoryWeatherStore, Measurement, Reading
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
@@ -365,7 +365,7 @@ def _met_no_case() -> tuple[Any, FetchRecord]:
 
 
 def _openweather_case(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, FetchRecord]:
-    monkeypatch.setenv(OPENWEATHER_ENV_VAR, "fake-openweather-key-do-not-use")
+    monkeypatch.setenv(OPENWEATHER_ENV_VAR, fake_secret("openweather"))
     provider = OpenWeatherProvider()
     (spec,) = provider.build_requests(LOCATION)
     body = (FIXTURES / "openweather_current.json").read_bytes()
