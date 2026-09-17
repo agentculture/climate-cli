@@ -1,0 +1,16 @@
+# Debug-only override — apply on top of docker-compose.yml, never stand
+# alone:
+#   docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d weather-mongodb
+#
+# Adds ONLY a host port publish to the EXISTING weather-mongodb service, so
+# a local GUI mongo client can reach it at 127.0.0.1:27020. This must never
+# become a second service (e.g. via compose's `extends:`): a second mongod
+# process sharing the same weather-mongodb-data volume would give two
+# independent processes concurrent write access to the same database
+# files, risking corruption. One service, one process, one extra port.
+name: climate-weather
+
+services:
+  weather-mongodb:
+    ports:
+      - "127.0.0.1:27020:27017"

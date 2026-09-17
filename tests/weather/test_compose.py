@@ -1,11 +1,15 @@
 """Tests for docker-compose.yml (the weather-tracking compose project).
 
-These tests parse docker-compose.yml with PyYAML and assert the acceptance
-criteria from the plan (task t8):
+These tests parse docker-compose.yml (and docker-compose.debug.yml) with
+PyYAML and assert the acceptance criteria from the plan (task t8):
 
   - no host port on weather-mongodb by default
   - every service sets json-file logging with max-size/max-file
-  - the named volume weather-mongodb-data exists and is used by mongo
+  - the named volume weather-mongodb-data exists and is used by exactly one
+    service (weather-mongodb) — the debug override file only adds a port
+    publish to that same service, never a second mongod process
+  - weather-web never receives provider credentials (no `env_file:`, no
+    KEY/TOKEN-shaped environment variable) — only weather-tracker does
   - no command in the repo removes that volume (no `down -v`, `--volumes`,
     `volume rm`, `volume prune`)
 
@@ -28,32 +32,19 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
-
-
-def _resolve_extends(services: dict) -> dict:
-    """Shallow-resolve `extends:` so per-service assertions (e.g. logging)
-    see inherited fields the same way `docker compose config` does, without
-    invoking the docker CLI.
-    """
-    resolved = {}
-    for name, svc in services.items():
-        extends = svc.get("extends") if isinstance(svc, dict) else None
-        if isinstance(extends, dict) and extends.get("service") in services:
-            base = dict(services[extends["service"]])
-            merged = dict(base)
-            merged.update({k: v for k, v in svc.items() if k != "extends"})
-            resolved[name] = merged
-        else:
-            resolved[name] = svc
-    return resolved
+DEBUG_COMPOSE_PATH = REPO_ROOT / "docker-compose.debug.yml"
 
 
 @pytest.fixture(scope="module")
 def compose() -> dict:
     text = COMPOSE_PATH.read_text(encoding="utf-8")
-    data = yaml.safe_load(text)
-    data["services"] = _resolve_extends(data["services"])
-    return data
+    return yaml.safe_load(text)
+
+
+@pytest.fixture(scope="module")
+def debug_compose() -> dict:
+    text = DEBUG_COMPOSE_PATH.read_text(encoding="utf-8")
+    return yaml.safe_load(text)
 
 
 def test_compose_file_exists():
@@ -84,27 +75,55 @@ def test_mongo_healthcheck_is_mongosh_ping(compose):
 
 
 def test_mongo_has_no_published_port_by_default(compose):
-    """weather-mongodb must not publish any host port in the default
-    (no-profile) service definition. The optional debug publish lives on a
-    *separate* service gated by the `debug-mongo` profile, so it does not
-    affect this assertion.
+    """weather-mongodb must not publish any host port in the base compose
+    file. The optional debug publish lives in a *separate* override file
+    (docker-compose.debug.yml, only applied on top of this one), so it does
+    not affect this assertion.
     """
     mongo = compose["services"]["weather-mongodb"]
     assert "ports" not in mongo or not mongo["ports"]
 
 
-def test_debug_mongo_publish_is_profile_gated_and_off_by_default(compose):
+def test_debug_override_file_exists_and_only_adds_a_port(debug_compose):
+    """The debug port publish must live in a separate override file that
+    adds ONLY a `ports:` entry to the EXISTING weather-mongodb service —
+    never a second service (e.g. via `extends:`) sharing the same
+    weather-mongodb-data volume, which would risk two mongod processes
+    writing to the same database files concurrently.
+    """
+    services = debug_compose["services"]
+    assert list(services) == ["weather-mongodb"], (
+        "docker-compose.debug.yml must define exactly one service "
+        "(weather-mongodb) — never a second mongo service"
+    )
+    mongo_override = services["weather-mongodb"]
+    assert set(mongo_override) == {"ports"}, (
+        "the debug override must add nothing but a port publish to the "
+        "existing weather-mongodb service"
+    )
+    ports = mongo_override["ports"]
+    assert any("27020" in str(p) for p in ports)
+    assert "extends" not in mongo_override
+    assert "volumes" not in mongo_override
+
+
+def test_debug_override_declares_no_volumes_or_services_besides_mongo(debug_compose):
+    assert "volumes" not in debug_compose or not debug_compose["volumes"]
+    assert "weather-mongodb-debug" not in debug_compose.get("services", {})
+
+
+def test_exactly_one_service_mounts_the_mongo_data_volume(compose):
+    """Two services mounting weather-mongodb-data would mean two independent
+    processes able to write the same database files concurrently — the
+    corruption risk the debug override file exists to avoid.
+    """
     services = compose["services"]
-    debug_services = {
-        name: svc
+    mounting = [
+        name
         for name, svc in services.items()
-        if any("27020" in str(p) for p in svc.get("ports", []))
-    }
-    assert debug_services, "expected some service to publish host port 27020 for debug"
-    for name, svc in debug_services.items():
-        assert name != "weather-mongodb", "the debug publish must not be on the default service"
-        profiles = svc.get("profiles") or []
-        assert profiles, f"{name} must be gated behind a compose profile (off by default)"
+        if any("weather-mongodb-data" in str(v) for v in (svc.get("volumes") or []))
+    ]
+    assert mounting == ["weather-mongodb"]
 
 
 def test_mongo_named_volume(compose):
@@ -159,14 +178,36 @@ def test_every_service_has_json_file_logging_with_limits(compose):
         assert "max-file" in options, f"{name} must set logging max-file"
 
 
-def test_secrets_come_from_gitignored_env_file(compose):
-    services = compose["services"]
-    for name in ("weather-tracker", "weather-web"):
-        svc = services[name]
-        env_file = svc.get("env_file")
-        assert env_file is not None, f"{name} must load secrets via env_file"
-        flattened = str(env_file)
-        assert "docker/weather.env" in flattened
+def test_tracker_secrets_come_from_gitignored_env_file(compose):
+    tracker = compose["services"]["weather-tracker"]
+    env_file = tracker.get("env_file")
+    assert env_file is not None, "weather-tracker must load secrets via env_file"
+    assert "docker/weather.env" in str(env_file)
+
+
+def test_web_has_no_env_file_and_no_provider_credentials(compose):
+    """weather-web is HTTP-facing and never performs provider requests, so a
+    compromise of that process must not expose the OpenWeather key or the
+    IMS token. It must not load docker/weather.env (or anything else) via
+    `env_file:`, and its explicit `environment:` must carry nothing whose
+    name looks like a credential.
+    """
+    web = compose["services"]["weather-web"]
+    assert "env_file" not in web, "weather-web must not load env_file (no provider credentials)"
+
+    environment = web.get("environment") or {}
+    for var_name in environment:
+        upper = var_name.upper()
+        assert "KEY" not in upper and "TOKEN" not in upper, (
+            f"weather-web environment must not contain a credential-shaped "
+            f"variable, found {var_name!r}"
+        )
+
+
+def test_web_mongo_uri_matches_tracker_default(compose):
+    web = compose["services"]["weather-web"]
+    environment = web.get("environment") or {}
+    assert environment.get("WEATHER_MONGO_URI") == "mongodb://weather-mongodb:27017/weather"
 
 
 def test_env_example_documents_every_required_variable():
@@ -186,8 +227,8 @@ def test_env_example_documents_every_required_variable():
         assert var in text, f"weather.env.example must document {var}"
 
     # The optional debug mongo publish must be documented too, even though
-    # it's a profile flag rather than an env var.
-    assert "debug-mongo" in text or "27020" in text
+    # it's a compose override-file command rather than an env var.
+    assert "docker-compose.debug.yml" in text or "27020" in text
 
     # No real-looking secrets or committed values — every var line must be
     # followed by an obvious placeholder, not a real key. This is a light
