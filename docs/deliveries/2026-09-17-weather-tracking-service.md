@@ -70,7 +70,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t9` | delivered | `climate/weather/mongo.py`: guarded connection, Mongo store, lease; merge `ca7c747`. Verified against real MongoDB only in `t26` |
 | `t10` | delivered | open-meteo adapter; merge `910d86c` after one rework (dropped variables, skipped blocks) |
 | `t11` | delivered | met-no adapter; merge `af9e791` after one rework (complete product, header mapping) |
-| `t12` | partial | openweather adapter; merge `0c7a1b2` shipped with non-vocabulary ids and a Kelvin fixture, fixed in `38bf693`. No successful live fetch yet: the key returned 401 |
+| `t12` | delivered | openweather adapter; merge `0c7a1b2` shipped with non-vocabulary ids and a Kelvin fixture, fixed in `38bf693`. Live: the new key returned 401 at 19:38 UTC (OpenWeather activation delay) and 200 at 19:50 on the next scheduled attempt. The first real payload exposed a city-id leak, fixed in `874d802` |
 | `t13` | partial | ims adapter; merge `49646b4`. Built from documentation and a synthesized fixture only; never run against the real API (no token) |
 | `t14` | delivered | metar and ims-forecast adapters; merge `f97c72c` after one rework (city names left the machine) |
 | `t15` | delivered | Read-only API on `http.server`; merge `1a8c12b`. Forecast route bug fixed live in `f9c76ea` |
@@ -119,6 +119,9 @@ below is a decision no record covers, captured directly.
   points for any real fetch time (`f9c76ea`).
 - The OpenWeather key was injected from the user's `grant` store into the
   gitignored `docker/weather.env` without being printed.
+- After the summary was first written, the first successful OpenWeather
+  payload showed the adapter emitting the provider's city id; it was removed
+  and the stored readings were re-derived so the id left the database too.
 
 ## Drift From Plan
 
@@ -128,7 +131,7 @@ below is a decision no record covers, captured directly.
 | `t6` | Contract changed after merge: 18 vocabulary rows, the no-drop rule and unit `other`; also an unplanned `/locations` route (deltas `b1`, `b5`) | acceptable |
 | `t7` | The fidelity check script is not wired into CI, which has no org checkout (evidence `e18` fail, delta `b7`) | needs-follow-up |
 | `t8` | One variable meant both the host mapping and the in-container bind, making the service unreachable; split in `573f842` (delta `b3`) | acceptable |
-| `t12` | Shipped violating the API vocabulary with a Kelvin fixture (lapse `l2`); fixed, but still no successful live fetch | needs-follow-up |
+| `t12` | Shipped violating the API vocabulary with a Kelvin fixture (lapse `l2`), and emitted OpenWeather's city id, which resolves to a place name; both fixed, the second only after the first live payload | risky |
 | `t13` | Never exercised against the real IMS API (plan risk `r1`) | needs-follow-up |
 | `t14` | City candidates moved to the URL fragment for privacy (delta `b2`) | acceptable |
 | `t15` | Several contract fields are always `null` or empty (`model_run_at`, `station`, `interval_seconds`, `capabilities.variables`); due counts for non-interval providers are estimates | needs-follow-up |
@@ -191,7 +194,7 @@ the operator's, capped where a lapse touches the claim.
 | The dashboard is chart-first, in the AgentCulture look, with attribution (c30, c47) | medium | `docs/design/*.png`; live screenshots; `e16`. No automated browser test; MCP not used |
 | Design tokens are a verbatim pinned copy (c31) | medium | `e17` pass, `e18` fail (not in CI) |
 | met-no normalizes the complete product (c3) | medium | `tests/weather/providers/test_met_no.py`; live 92 readings. Capped by lapse `l1` |
-| openweather normalizes to the contract vocabulary | low | `tests/weather/providers/test_vocabulary_conformance.py`. Capped by lapse `l2`; synthesized fixture; live fetch returned 401 |
+| openweather normalizes to the contract vocabulary and emits no place identifier | medium | `tests/weather/providers/test_vocabulary_conformance.py`; live HTTP 200 with readings; commit `874d802`. Capped by lapse `l2`; fixture still synthesized |
 | ims works against the real Envista API | unverified | (no evidence — no token; not claimed done) |
 | At least 95 % of due fetches stored over 24 unattended hours; collection resumes after a reboot (c36) | unverified | (no evidence — not observed; not claimed done) |
 | CI is green for this branch, including SonarCloud | unverified | (no evidence — nothing pushed, no PR) |
@@ -208,8 +211,11 @@ Lapse ledger evidence: pending approval (not yet evidence): `l1`, `l2`, `l3`,
 - `t26` — observe and file the 24-hour completeness figure
   (`climate weather stats`) and the reboot-resume check. The stack is running
   now, so the first figure is readable tomorrow.
-- `t12` — confirm a successful OpenWeather fetch once the new key activates;
-  the tracker retries every 10 minutes and stores each failure.
+- `t12` — replace the synthesized OpenWeather fixture with a captured one
+  (place fields removed) now that a key exists.
+- API provenance still names the configured METAR station and the fallback
+  forecast city; decide whether to make them opaque before the web service is
+  ever exposed beyond loopback — user.
 - `t13` — verify ims live when the emailed token arrives; add it to
   `docker/weather.env` as `CLIMATE_IMS_API_TOKEN`.
 - `t7` — decide whether the token fidelity check belongs in CI at all, given
