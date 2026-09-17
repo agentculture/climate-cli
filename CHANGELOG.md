@@ -28,6 +28,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **PR review round (Qodo + SonarCloud).** The debug MongoDB profile no longer
+  starts a second `mongod` on the live data volume (it is now an override file
+  that only publishes a port); the web container no longer receives provider
+  credentials, and provider availability shown by the API and `climate doctor`
+  now comes from the tracker's heartbeat, the one process that holds the keys;
+  `/series` and `/stats` are bounded (366-day span, arithmetic grid sizing,
+  count queries) so a large request cannot exhaust the service; every
+  vocabulary variable is queryable through one shared `climate.weather.vocabulary`
+  module that is tested against the contract tables; `replace_readings`
+  validates and inserts before it deletes; the tracker releases its lease on
+  every exit path; malformed or out-of-range configuration is a clean exit-2
+  error; disabled providers never block startup; quota validation counts the
+  requests an adapter really makes (ims: one per station); station and city
+  parameters can be given per location; forecasts report the provider's model
+  run time (`model_run_at`, `issued_at_estimated`) and measure their horizon
+  from now; the dashboard no longer draws past forecast points over history or
+  lets a stale refresh overwrite a newer one. 90 SonarCloud maintainability
+  issues were fixed by refactoring, none suppressed.
 - `tests/weather/test_compose.py` imports PyYAML outright instead of `pytest.importorskip`, and `pyyaml` is a declared dev dependency — the compose data-safety assertions can no longer skip themselves away silently.
 
 ## [0.4.0] - 2026-09-17
