@@ -226,11 +226,85 @@ def test_normalize_derives_a_model_reading_from_the_fixture(
     assert reading.location == NEUTRAL_LABEL
     assert reading.observed_at == datetime.fromtimestamp(1758131446, tz=UTC)
     assert reading.requested_at == NOW
-    assert reading.values["temperature"].value == pytest.approx(285.32)
-    assert reading.values["temperature"].unit == "C"
-    assert reading.values["humidity"].value == pytest.approx(72)
-    assert reading.values["pressure"].value == pytest.approx(1015)
+    assert reading.values["temperature"].value == pytest.approx(12.17)
+    assert reading.values["temperature"].unit == "degC"
+    assert reading.values["relative_humidity"].value == pytest.approx(72)
+    assert reading.values["relative_humidity"].unit == "percent"
+    assert reading.values["pressure_msl"].value == pytest.approx(1015)
+    assert reading.values["pressure_msl"].unit == "hPa"
     assert reading.values["wind_speed"].value == pytest.approx(3.6)
+    assert reading.values["wind_speed"].unit == "m_s"
+
+
+def test_normalize_maps_every_documented_variable(provider: OpenWeatherProvider) -> None:
+    """The full vocabulary mapping this fix introduced, against the fixture."""
+    reading = provider.normalize(_fixture_record())[0]
+    values = reading.values
+
+    assert values["apparent_temperature"].value == pytest.approx(11.36)
+    assert values["apparent_temperature"].unit == "degC"
+    assert values["temperature_min"].value == pytest.approx(10.79)
+    assert values["temperature_min"].unit == "degC"
+    assert values["temperature_max"].value == pytest.approx(13.06)
+    assert values["temperature_max"].unit == "degC"
+    assert values["pressure_surface"].value == pytest.approx(1011)
+    assert values["pressure_surface"].unit == "hPa"
+    assert values["wind_gust"].value == pytest.approx(5.1)
+    assert values["wind_gust"].unit == "m_s"
+    assert values["wind_direction"].value == pytest.approx(250)
+    assert values["wind_direction"].unit == "deg"
+    assert values["cloud_cover"].value == pytest.approx(75)
+    assert values["cloud_cover"].unit == "percent"
+    assert values["visibility"].value == pytest.approx(10000)
+    assert values["visibility"].unit == "m"
+    assert values["rain"].value == pytest.approx(0.5)
+    assert values["rain"].unit == "mm"
+    assert values["weather_code"].value == "803"
+    assert values["weather_code"].unit == "code"
+
+
+def test_normalize_never_uses_a_bare_unit_symbol(provider: OpenWeatherProvider) -> None:
+    """Regression guard for the original defect: 'C'/'%'/'m/s' are not table unit ids."""
+    reading = provider.normalize(_fixture_record())[0]
+    banned_units = {"C", "%", "m/s"}
+    for measurement in reading.values.values():
+        assert measurement.unit not in banned_units
+
+
+def test_normalize_drops_no_provider_value_except_location(
+    provider: OpenWeatherProvider,
+) -> None:
+    """docs/weather-api.md section 4's 'no provider value is dropped' rule.
+
+    Every scalar/coded field in the fixture is represented under some
+    variable id, except the coordinate and place-name fields the API
+    contract forbids emitting entirely (section 1.3).
+    """
+    reading = provider.normalize(_fixture_record())[0]
+    values = reading.values
+    original_values = {
+        str(m.original_value) for m in values.values() if m.original_value is not None
+    }
+
+    # Vocabulary/x_ ids account for every field except coord/name/sys.country.
+    assert "x_base" in values
+    assert "x_timezone" in values
+    assert "x_id" in values
+    assert "x_cod" in values
+    assert "x_sys_type" in values
+    assert "x_sys_id" in values
+    assert "x_sys_sunrise" in values
+    assert "x_sys_sunset" in values
+    assert "x_weather_main" in values
+    assert "x_weather_description" in values
+    assert "x_weather_icon" in values
+
+    # Never leaked: coordinates and the place name.
+    for measurement in values.values():
+        assert measurement.original_value != -0.0005  # coord.lon
+        assert measurement.original_value != 51.4769  # coord.lat
+    assert "Example-Fixture-City" not in original_values
+    assert "GB" not in original_values
 
 
 def test_normalize_never_uses_requested_at_as_observed_at(

@@ -80,9 +80,16 @@ captured live, and are recorded here as synthesized, not measured:
   current-weather endpoint (`/data/2.5/weather`), built from OpenWeather's
   published API documentation. Coordinates are the same Greenwich neutral
   point; `name`/`id` are placeholder values (`"Example-Fixture-City"`, `0`),
-  not a real OpenWeather city record. This fixture may not exactly match a
-  real response; task t12's first live fetch is the recorded risk that
-  verifies it (see plan risks).
+  not a real OpenWeather city record. `main.temp`/`feels_like`/`temp_min`/
+  `temp_max` are given in **Celsius**, and `wind.speed`/`wind.gust` in
+  **m/s**, consistent with the adapter's own `units=metric` request
+  parameter — an earlier revision of this fixture mistakenly left the `main`
+  block in Kelvin (`temp: 285.32`) while the adapter requested `metric`,
+  which the vocabulary-conformance suite
+  (`tests/weather/providers/test_vocabulary_conformance.py`) now catches via
+  its `degC` plausibility bound. This fixture may not exactly match a real
+  response; task t12's first live fetch is the recorded risk that verifies
+  it (see plan risks).
 
 - **`ims_stations.json`** — shape of the IMS Envista `/v1/stations` list,
   built from the IMS API PDF (`API_Explanation_en.pdf`) documented fields.
