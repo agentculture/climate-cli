@@ -25,7 +25,8 @@
         </p>
       </div>
 
-      <div class="controls" role="group" aria-label="What the page shows">
+      <fieldset class="controls">
+        <legend class="sr-only">What the page shows</legend>
         <label class="control control--select">
           <span class="control__label">Location</span>
           <select id="location-select" disabled>
@@ -47,7 +48,7 @@
             >
           </div>
         </fieldset>
-      </div>
+      </fieldset>
     </header>
 
     <main>
@@ -59,7 +60,7 @@
             <h2 id="now-title">Now</h2>
             <p class="band__note" data-role="now-note"></p>
           </div>
-          <div class="tiles" id="tiles" role="list"></div>
+          <ul class="tiles" id="tiles"></ul>
         </section>
 
         <section class="band" id="trend" aria-labelledby="trend-title">

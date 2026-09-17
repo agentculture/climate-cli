@@ -122,6 +122,12 @@ the legend names every series.
   produces mostly-null series; the window's `step` is chosen to match the
   providers' cadences (900 s / 1800 s / 3600 s for 6 h / 24 h / 7 d) and
   whatever is still sparse is drawn as points.
+- A forecast run can carry points whose valid time has already passed,
+  because the provider issued the run hours ago. Those points belong to the
+  history, which the page reads from `/series`, so they are dropped before
+  the chart sees them and each band draws only what its own scale places
+  inside it. The future band never shows a time that is not in the future,
+  and a forecast is never extrapolated back across the now rule.
 - A stale value keeps its tile but loses its ink weight and gains a
   "Stale" chip with its age.
 - A disabled provider stays in the collection strip with its reason, and
@@ -142,6 +148,12 @@ the legend names every series.
   focus shows exactly what hover shows. `Escape` dismisses it.
 - The chart carries an `aria-label` summarising each series' range, and a
   `Data table` disclosure holds every plotted value.
+- Grouping is done with the native element, not an ARIA role: the masthead
+  controls are a `fieldset` with a visually hidden `legend`, and the now
+  band is a `ul` of `li` tiles. Both render pixel-identically to the
+  `role="group"` / `role="list"` markup they replaced, and they carry
+  further, because an assistive technology that ignores ARIA still sees
+  them.
 - Meters carry an `aria-label` with their figure; status is icon plus word.
 - Refresh is every 60 s and holds the previous render at reduced opacity —
   no skeleton, no layout jump. The opacity change is the only motion on the

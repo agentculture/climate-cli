@@ -64,7 +64,7 @@ export async function get(route, params, { signal } = {}) {
       signal,
     });
   } catch (cause) {
-    if (cause && cause.name === "AbortError") throw cause;
+    if (cause?.name === "AbortError") throw cause;
     throw new ApiError("The weather service is not answering.", {
       route,
       unreachable: true,
@@ -79,7 +79,7 @@ export async function get(route, params, { signal } = {}) {
   }
 
   if (!response.ok) {
-    const error = body && body.error ? body.error : {};
+    const error = body?.error || {};
     throw new ApiError(error.message || `Request failed with ${response.status}.`, {
       route,
       status: response.status,

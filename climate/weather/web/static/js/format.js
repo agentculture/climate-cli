@@ -60,16 +60,25 @@ export function labelOf(variableId) {
   return VARIABLE_LABEL[variableId] || variableId;
 }
 
+/**
+ * Units whose place count never depends on the magnitude: a percent, a
+ * bearing, an irradiance and a distance in metres read as whole numbers,
+ * and a millimetre of rain keeps its tenth however large the total is.
+ */
+const FIXED_DIGITS = Object.freeze({ percent: 0, deg: 0, w_m2: 0, m: 0, mm: 1 });
+
+/** Every other unit — including hPa — drops the decimal from 100 up. */
+function digitsFor(unitId, abs) {
+  const fixed = FIXED_DIGITS[unitId];
+  if (fixed !== undefined) return fixed;
+  return abs >= 100 ? 0 : 1;
+}
+
 /** A measured value, rounded to a sensible number of places for its unit. */
 export function formatValue(value, unitId) {
   if (value === null || value === undefined) return "—";
   if (typeof value === "string") return value;
-  const abs = Math.abs(value);
-  let digits = 1;
-  if (unitId === "percent" || unitId === "deg" || unitId === "w_m2" || unitId === "m") digits = 0;
-  else if (unitId === "hPa") digits = abs >= 100 ? 0 : 1;
-  else if (unitId === "mm") digits = 1;
-  else if (abs >= 100) digits = 0;
+  const digits = digitsFor(unitId, Math.abs(value));
   return value.toLocaleString(undefined, {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
@@ -131,6 +140,5 @@ export function compassOf(degrees) {
 
 /** A provider id rendered the way its registry title would be. */
 export function providerTitle(providerId, providers) {
-  const row = (providers || []).find((item) => item.provider === providerId);
-  return (row && row.title) || providerId;
+  return (providers || []).find((item) => item.provider === providerId)?.title || providerId;
 }
