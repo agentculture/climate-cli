@@ -6,10 +6,17 @@ AgentCulture **skills supplier** after the steward → guildmaster cutover
 (`steward doctor`, the sibling-pattern baseline); only the skills-supplier role
 moved. This file tracks provenance so re-syncs stay deterministic.
 
-Three skills (`think`, `spec-to-plan`, `assign-to-workforce`) originate in
-[`agentculture/devague`](https://github.com/agentculture/devague) and are
-**re-broadcast** through guildmaster — cite guildmaster's copy; track devague as
-the true origin. One skill, `ask-colleague` (formerly `outsource`), originates in
+Eight skills — the full devague operator family (`scope`, `think`,
+`challenge`, `spec-to-plan`, `assign-to-workforce`, `deviate`,
+`validate-delivery`, `summarize-delivery`) — originate in
+[`agentculture/devague`](https://github.com/agentculture/devague). guildmaster
+re-broadcasts them, but as of 2026-09-17 they are synced **directly from
+devague `main`** per `devague learn` (see
+[below](#local-divergence--devague-family-synced-direct-from-devague-2026-09-17)).
+Two skills, `remember` and `recall`, originate in
+[`agentculture/eidetic-cli`](https://github.com/agentculture/eidetic-cli) and
+are vendored directly from it. One skill, `ask-colleague` (formerly
+`outsource`), originates in
 [`agentculture/colleague`](https://github.com/agentculture/colleague) — the
 renamed `convertible`. guildmaster's re-broadcast still carries the old
 `outsource` name, so `ask-colleague` is vendored **directly from colleague** as a
@@ -30,9 +37,16 @@ is load-bearing, even where guildmaster's upstream copy omits it.
 | `pypi-maintainer` | `../guildmaster/.claude/skills/pypi-maintainer/` | guildmaster | Switch a package install between PyPI / TestPyPI / local editable (`scripts/switch-source.sh`). Verbatim except added `type: command`. | 2026-05-26 (guildmaster 0.6.0) |
 | `run-tests` | `../guildmaster/.claude/skills/run-tests/` | guildmaster | pytest + xdist + coverage (`scripts/test.sh`). Verbatim except added `type: command`. | 2026-05-26 (guildmaster 0.6.0) |
 | `sonarclaude` | `../guildmaster/.claude/skills/sonarclaude/` | guildmaster | SonarCloud API queries (`scripts/sonar.sh`). Verbatim except added `type: command`. | 2026-05-26 (guildmaster 0.6.0) |
-| `think` | `../guildmaster/.claude/skills/think/` | **devague** (re-broadcast via guildmaster) | idea→spec leg of the devague workflow chain. Verbatim (already carried `type: command` at guildmaster). Origin/broadcast prose left verbatim. | 2026-05-26 (guildmaster 0.6.0) |
-| `spec-to-plan` | `../guildmaster/.claude/skills/spec-to-plan/` | **devague** (re-broadcast via guildmaster) | spec→plan leg of the devague workflow chain. Verbatim (already carried `type: command`). | 2026-05-26 (guildmaster 0.6.0) |
-| `assign-to-workforce` | `../guildmaster/.claude/skills/assign-to-workforce/` | **devague** (re-broadcast via guildmaster) | plan→parallel-implementation leg of the devague workflow chain. Verbatim (already carried `type: command`). | 2026-05-26 (guildmaster 0.6.0) |
+| `scope` | `../devague/.claude/skills/scope/` | **devague** (direct; also re-broadcast via guildmaster) | Optional opening leg (idea→explored scope). **Method-only** — no `scripts/`; SKILL.md drives `devague scope` directly. | 2026-09-17 (devague 0.24.1, direct) |
+| `think` | `../devague/.claude/skills/think/` | **devague** (direct; also re-broadcast via guildmaster) | idea→spec leg. CLI-driving (`scripts/think.sh` resolver). Verbatim. | 2026-09-17 (devague 0.24.1, direct) |
+| `challenge` | `../devague/.claude/skills/challenge/` | **devague** (direct; also re-broadcast via guildmaster) | Risk-scaled blind-spot pass between `think` and `spec-to-plan`. **Method-only** — no `scripts/`. Verbatim. | 2026-09-17 (devague 0.24.1, direct) |
+| `spec-to-plan` | `../devague/.claude/skills/spec-to-plan/` | **devague** (direct; also re-broadcast via guildmaster) | spec→plan leg. CLI-driving (`scripts/spec-to-plan.sh` resolver). Verbatim. | 2026-09-17 (devague 0.24.1, direct) |
+| `assign-to-workforce` | `../devague/.claude/skills/assign-to-workforce/` | **devague** (direct; also re-broadcast via guildmaster) | plan→parallel-implementation leg. CLI-driving (`scripts/assign-to-workforce.sh`). Verbatim **except** the `agex pr open` → `devex pr open` rename (SKILL.md + script comment), re-applied per the `agex` → `devex` divergence below. | 2026-09-17 (devague 0.24.1, direct) |
+| `deviate` | `../devague/.claude/skills/deviate/` | **devague** (direct; also re-broadcast via guildmaster) | Execution-time leg: human-approved departures via `devague deviate`. **Method-only** — no `scripts/`. Verbatim. | 2026-09-17 (devague 0.24.1, direct) |
+| `validate-delivery` | `../devague/.claude/skills/validate-delivery/` | **devague** (direct; also re-broadcast via guildmaster) | Execution→evidence leg: run the plan's behavioral tests agent-side, file `devague evidence` / `devague delta`. **Method-only** — no `scripts/`. Verbatim. New in this sync. | 2026-09-17 (devague 0.24.1, direct) |
+| `summarize-delivery` | `../devague/.claude/skills/summarize-delivery/` | **devague** (direct; also re-broadcast via guildmaster) | Closing leg: plan-vs-actual accountability artifact from `devague summary`. **Method-only** — no `scripts/`. Verbatim. | 2026-09-17 (devague 0.24.1, direct) |
+| `remember` | `../eidetic-cli/.claude/skills/remember/` | **eidetic-cli** (direct) | Write half of the eidetic memory surface (`scripts/remember.sh` → `eidetic remember`). Defaults to `--scope climate-cli --visibility public` — upstream's own default since eidetic 0.13, so the former local public-default policy override is gone. Localized only in the `--scope <suffix>` examples (`eidetic-cli` → `climate-cli`; Provenance kept). **One local script fix:** the interactive-stdin guard fires on "no JSON record argument" instead of "no arguments", so a flag-only call (`remember.sh --json`) on a TTY prints usage instead of hanging — lift upstream. Needs `eidetic` on PATH (>=0.10 for in-repo routing). | 2026-09-17 (eidetic-cli 0.14.1, direct) |
+| `recall` | `../eidetic-cli/.claude/skills/recall/` | **eidetic-cli** (direct) | Read half (`scripts/recall.sh` → `eidetic recall`; exact / approximate / keyword / hybrid, opt-in `--rerank`). Defaults to `--scope climate-cli --visibility public`. Localized only in the `--scope <suffix>` examples. Script verbatim. | 2026-09-17 (eidetic-cli 0.14.1, direct) |
 | `ask-colleague` | `../colleague/.claude/skills/ask-colleague/` | **colleague** (renamed from convertible; vendored directly — guildmaster re-broadcast pending) | The first-party front door to the `colleague` CLI: hand a scoped task to a *different* engine/mind via `explore` / `review` / `write`, and grade a finished work item via `feedback` (the ROI loop). `explore`/`review` run isolated in a throwaway `git worktree`; `write` **previews by default** (throwaway worktree, no side effects) and refuses a dirty tree only when applying (`--apply` / `--pr`). Verbatim except one consumer-identifying clause in the Provenance paragraph (`colleague vendors from guildmaster` → `climate-cli vendors from guildmaster`); already carried `type: command`. Optional runtime dep: **`colleague`** on PATH. | 2026-06-06 (colleague 0.39.2, direct) |
 
 ## Re-sync procedure
@@ -77,6 +91,32 @@ The same in-place patch also bumped the documented `devex` version floor from
 this doc's tooling-prerequisites and the `await`-era feature set) — likewise
 flagged for guildmaster on #48.
 
+### Local divergence — devague family synced direct from devague (2026-09-17)
+
+`devague learn` names **eight** operator skills and points at devague's own
+`main` as the source for each (`devague learn skills:all`). guildmaster's
+re-broadcast lagged — this repo carried stale copies of seven and was missing
+`validate-delivery` entirely — so the whole family is now pulled straight from
+the origin, in the same spirit as the `ask-colleague` divergence below. Three
+are CLI-driving (a `scripts/<name>.sh` resolver); five are **method-only** by
+design (SKILL.md only, invoking the devague CLI directly — no `scripts/`
+directory is expected). Re-sync path:
+
+```bash
+for s in scope think challenge spec-to-plan assign-to-workforce deviate \
+         validate-delivery summarize-delivery; do
+  rm -rf .claude/skills/$s
+  git -C ../devague archive origin/main .claude/skills/$s | tar -x -C .
+done
+# Re-apply the agex -> devex rename in assign-to-workforce (SKILL.md + script).
+sed -i 's/`agex pr open`/`devex pr open`/' \
+  .claude/skills/assign-to-workforce/SKILL.md \
+  .claude/skills/assign-to-workforce/scripts/assign-to-workforce.sh
+```
+
+Once guildmaster re-broadcasts devague 0.24.1+, switch the upstream column back
+to guildmaster if preferred — the content is identical.
+
 ### Local divergence — outsource → ask-colleague (2026-06-06)
 
 `convertible` was renamed **`colleague`**, and its skill `outsource` →
@@ -109,6 +149,12 @@ to `../guildmaster/.claude/skills/ask-colleague/` and re-sync from there.
 
 - **`devex`** (>=0.21) on PATH — `cicd` delegates the PR lifecycle to `devex pr`.
 - **`agtag`** (>=0.1) on PATH — `communicate` issue I/O wraps `agtag issue`.
+- **`devague`** (>=0.24) on PATH — the eight devague-family skills drive it
+  (`uv tool install devague`); the three resolver scripts print that hint if it
+  is absent.
+- **`eidetic`** (>=0.10) on PATH — `remember` / `recall` wrap it
+  (`uv tool install eidetic-cli`); older CLIs keep public records in `$HOME`
+  instead of `<repo-root>/.eidetic/memory`.
 
 Both ship on PATH in the standard AgentCulture dev setup (installed per the
 devex / agtag READMEs).

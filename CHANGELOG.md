@@ -5,44 +5,54 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-06-24
+## [0.4.0] - 2026-09-17
 
 ### Added
 
+- **Full eight-skill devague operator family**, re-learned from `devague learn`
+  and synced **directly from devague `main` (0.24.1)**: `scope` → `think` →
+  `challenge` → `spec-to-plan` → `assign-to-workforce` → `deviate` →
+  `validate-delivery` → `summarize-delivery`. `validate-delivery` is new (run
+  the confirmed plan's behavioral tests agent-side and file `devague evidence` /
+  `devague delta` before the delivery summary); `scope`, `challenge`, `deviate`
+  and `summarize-delivery` land with this release. Five are method-only by
+  design (SKILL.md only, no `scripts/`); three keep their CLI resolver script.
+  All verbatim except the tracked `agex` → `devex` rename in
+  `assign-to-workforce`.
 - **Memory-discipline "Conventions and workflow" section in `CLAUDE.md`** — a
-  per-task *recall-before / remember-after* convention (scope localized to this
-  repo's nick) so the vendored `remember` / `recall` skills are actually used,
-  not just present: `/recall` before non-trivial work to build on prior
-  decisions instead of re-deriving them, and `/remember` when a non-obvious
-  decision, constraint, fix-and-why, or hard-won gotcha surfaces. The section
-  documents this repo's memory as **in-repo and public** — records resolve to
-  `<repo-root>/.eidetic/memory` (committed, team- and mesh-shared). Inserted
-  idempotently (skipped if already present), slotted under an existing
-  "Conventions and workflow" heading when one exists, else appended.
+  per-task *recall-before / remember-after* convention so the vendored
+  `remember` / `recall` skills are actually used: `/recall` before non-trivial
+  work, `/remember` when a non-obvious decision, constraint, fix-and-why, or
+  gotcha surfaces. Memory here is **in-repo and public** — records resolve to
+  `<repo-root>/.eidetic/memory` (committed, team- and mesh-shared).
+- `climate explain climate` — the installed console-script name now resolves
+  to the root explain entry, fixing the `explain_self` failure in the
+  `teken cli doctor --strict` rubric gate (the lint job).
 
 ### Changed
 
-- **Refreshed the `remember` + `recall` wrappers from eidetic-cli 0.10.0**
-  (cite-don't-import) — picks up eidetic's **project-local store default**: the
-  files backend now resolves per record by visibility — PUBLIC records inside a
-  git repo go to `<repo-root>/.eidetic/memory` (committed, team-shared), PRIVATE
-  records (or any record outside a repo) go to `$HOME/.eidetic/memory` (never
-  committed), an explicit `EIDETIC_DATA_DIR` still wins, and recall reads both
-  stores and merges. Also carries the 0.9.3 hardening (interactive-stdin guard,
-  `help` as a search term, SIGPIPE-safe suffix parsing). **Recipe policy
-  override (the wrappers here are NOT byte-verbatim):** the injected default
-  visibility is flipped from eidetic's `private` to **`public`**, so a plain
-  `/remember` lands the note in `./.eidetic/memory` in this repo, kept as part
-  of the repo — pass `--visibility private` to route a record to `$HOME`
-  instead. `remember` drives `eidetic remember` (idempotent upsert of one JSON
-  record or an NDJSON batch on stdin); `recall` drives `eidetic recall` with
-  four search modes (exact / approximate / keyword / hybrid). Each `SKILL.md` is
-  localized only in the illustrative `--scope <nick>` examples (Provenance keeps
-  "First-party to eidetic-cli"). Runtime dep: the `eidetic` CLI on PATH (else a
-  local eidetic-cli checkout with `uv`) — **`eidetic >= 0.10.0`** for the
-  in-repo routing; on an older CLI the public records still work but are stored
-  in `$HOME/.eidetic/memory` instead of in-repo. Propagated by rollout-cli's
-  `eidetic-memory` recipe.
+- **Refreshed the stale devague skills** (`think`, `spec-to-plan`,
+  `assign-to-workforce`) to devague 0.24.1 — enriched `plan waves` split plan
+  with an End state section and `split-plan --write`, instructions carried to
+  the workforce brief, obligations/evidence/deltas, and the eight-leg ordering
+  (authoring order vs. flow order now stated explicitly).
+- **Re-vendored `remember` + `recall` from eidetic-cli 0.14.1** — upstream now
+  defaults the personal scope to `--visibility public` itself, so the former
+  local "public-default policy override" is gone and both `SKILL.md` files
+  match the wrappers (visibility-aware routing: public → `<repo>/.eidetic/memory`,
+  private → `$HOME/.eidetic/memory`). Also picks up the opt-in `--rerank` stage
+  and the lobes gateway embed endpoint (`:8001`). Localized only in the
+  `--scope climate-cli` examples.
+- `docs/skill-sources.md` now records all eight devague skills, `remember` and
+  `recall` with their true origins, plus the direct-from-devague re-sync
+  procedure; `README.md` drops the stale hard-coded skill count and uses the
+  real `climate` console script in the quickstart.
+
+### Fixed
+
+- `remember.sh` no longer hangs on an interactive terminal when called with
+  flags but no record (`remember.sh --json`): the stdin guard now checks for a
+  JSON record argument instead of an empty argument list.
 
 ## [0.3.0] - 2026-06-23
 
