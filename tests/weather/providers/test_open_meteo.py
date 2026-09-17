@@ -164,7 +164,7 @@ def test_normalize_yields_a_current_reading_kind_model() -> None:
     assert len(current_readings) == 1
     current = current_readings[0]
     assert current.provider == "open-meteo"
-    assert current.source == "best_match"
+    assert current.source == "v1/forecast/current"
     assert current.model is None
     assert current.location == NEUTRAL_LABEL
     assert current.requested_at == REQUESTED_AT
@@ -187,11 +187,21 @@ def test_normalize_current_reading_carries_normalized_units() -> None:
     assert wind_speed.original_unit == "km/h"
 
 
-def test_normalize_drops_variables_with_no_vocabulary_entry() -> None:
+def test_normalize_never_drops_showers_or_snowfall() -> None:
+    # docs/weather-api.md section 4 now carries vocabulary rows for both.
     provider = OpenMeteoProvider()
     current = next(r for r in provider.normalize(_fetch()) if r.kind == "model")
-    assert "showers" not in current.values
-    assert "snowfall" not in current.values
+    showers = current.values["showers"]
+    assert showers.unit == "mm"
+    assert showers.value == pytest.approx(FIXTURE_DOCUMENT["current"]["showers"])
+
+    snowfall = current.values["snowfall"]
+    original_cm = FIXTURE_DOCUMENT["current"]["snowfall"]
+    assert snowfall.unit == "mm"
+    # Open-Meteo reports snowfall in cm; the vocabulary unit is mm (x10).
+    assert snowfall.value == pytest.approx(original_cm * 10)
+    assert snowfall.original_value == original_cm
+    assert snowfall.original_unit == "cm"
 
 
 def test_normalize_observed_at_is_never_the_requested_at() -> None:
@@ -206,11 +216,12 @@ def test_normalize_observed_at_is_never_the_requested_at() -> None:
 def test_normalize_yields_forecast_readings_for_hourly_entries_after_now() -> None:
     provider = OpenMeteoProvider()
     readings = provider.normalize(_fetch())
-    forecasts = [r for r in readings if r.kind == "forecast"]
+    forecasts = [r for r in readings if r.source == "v1/forecast/hourly"]
     hourly_times = FIXTURE_DOCUMENT["hourly"]["time"]
     # index 0 equals current.time exactly, so it must be excluded
     assert len(forecasts) == len(hourly_times) - 1
     current = next(r for r in readings if r.kind == "model")
+    assert all(reading.kind == "forecast" for reading in forecasts)
     assert all(reading.observed_at > current.observed_at for reading in forecasts)
     # strictly increasing, oldest excluded
     assert forecasts == sorted(forecasts, key=lambda r: r.observed_at)
@@ -219,14 +230,53 @@ def test_normalize_yields_forecast_readings_for_hourly_entries_after_now() -> No
 def test_normalize_forecast_reading_values_and_provenance() -> None:
     provider = OpenMeteoProvider()
     forecasts = [r for r in provider.normalize(_fetch()) if r.kind == "forecast"]
-    first = forecasts[0]
+    hourly = [r for r in forecasts if r.source == "v1/forecast/hourly"]
+    first = hourly[0]
     assert first.provider == "open-meteo"
-    assert first.source == "best_match"
     assert first.model is None
     assert "temperature" in first.values
     assert first.values["temperature"].unit == "degC"
     assert "precipitation_probability" in first.values
     assert first.values["precipitation_probability"].unit == "percent"
+
+
+def test_normalize_yields_minutely_15_forecasts_with_a_distinct_source() -> None:
+    provider = OpenMeteoProvider()
+    readings = provider.normalize(_fetch())
+    current = next(r for r in readings if r.kind == "model")
+    minutely = [r for r in readings if r.source == "v1/forecast/minutely_15"]
+    minutely_times = FIXTURE_DOCUMENT["minutely_15"]["time"]
+    expected = sum(
+        1
+        for text in minutely_times
+        if datetime.fromisoformat(text).replace(tzinfo=UTC) > current.observed_at
+    )
+    assert len(minutely) == expected
+    assert all(reading.kind == "forecast" for reading in minutely)
+    assert all(reading.observed_at > current.observed_at for reading in minutely)
+    assert "temperature" in minutely[0].values
+
+
+def test_normalize_yields_daily_forecasts_with_a_distinct_source_and_x_fallback() -> None:
+    provider = OpenMeteoProvider()
+    readings = provider.normalize(_fetch())
+    daily = [r for r in readings if r.source == "v1/forecast/daily"]
+    # fixture's daily.time[0] is "today" (before current.time), so it is
+    # excluded; the remaining 6 future days are all forecasts.
+    assert len(daily) == len(FIXTURE_DOCUMENT["daily"]["time"]) - 1
+    first = daily[0]
+    assert first.kind == "forecast"
+    assert "temperature_max" in first.values
+    assert first.values["temperature_max"].unit == "degC"
+    assert "temperature_min" in first.values
+    assert "precipitation" in first.values
+    # uv_index_max has no vocabulary row: "no provider value is dropped"
+    assert "x_uv_index_max" in first.values
+    assert first.values["x_uv_index_max"].unit == "index"
+    assert (
+        first.values["x_uv_index_max"].original_value
+        == FIXTURE_DOCUMENT["daily"]["uv_index_max"][1]
+    )
 
 
 # --- normalize: failure / empty cases ---------------------------------------
@@ -242,6 +292,32 @@ def test_normalize_returns_no_readings_for_a_transport_error() -> None:
     provider = OpenMeteoProvider()
     record = _fetch(status=None, body=b"", error=FetchError(kind="timeout"))
     assert provider.normalize(record) == ()
+
+
+def test_normalize_drops_no_provider_variable() -> None:
+    """Every variable key the fixture's four blocks carry ends up under some id.
+
+    docs/weather-api.md section 4: "No provider value is dropped." A mapped
+    variable lands under its vocabulary id; an unmapped one (only
+    ``uv_index_max`` today) lands under ``x_<name>``.
+    """
+    from climate.weather.providers.open_meteo import _VARIABLE_MAP
+
+    provider = OpenMeteoProvider()
+    readings = provider.normalize(_fetch())
+    ids_by_source: dict[str, set[str]] = {}
+    for reading in readings:
+        ids_by_source.setdefault(reading.source, set()).update(reading.values.keys())
+
+    def expected_ids(block: dict) -> set[str]:
+        keys = set(block.keys()) - {"time", "interval"}
+        return {_VARIABLE_MAP[key][0] if key in _VARIABLE_MAP else f"x_{key}" for key in keys}
+
+    assert expected_ids(FIXTURE_DOCUMENT["current"]) <= ids_by_source["v1/forecast/current"]
+    assert expected_ids(FIXTURE_DOCUMENT["minutely_15"]) <= ids_by_source["v1/forecast/minutely_15"]
+    assert expected_ids(FIXTURE_DOCUMENT["hourly"]) <= ids_by_source["v1/forecast/hourly"]
+    assert expected_ids(FIXTURE_DOCUMENT["daily"]) <= ids_by_source["v1/forecast/daily"]
+    assert "x_uv_index_max" in ids_by_source["v1/forecast/daily"]
 
 
 def test_normalize_is_pure_and_re_derivable() -> None:

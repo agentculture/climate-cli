@@ -9,11 +9,23 @@ Open-Meteo bills it, see :func:`call_weight` below) and normalizes:
 * the ``current`` block into one :class:`~climate.weather.store.Reading` of
   ``kind="model"`` — it is a model's value for the present, not a
   measurement (spec vocabulary, ``docs/weather-api.md`` section 4.2);
-* the ``hourly`` block's entries that fall strictly after the ``current``
-  block's own time into ``kind="forecast"`` readings. The ``minutely_15``
-  and ``daily`` blocks are fetched and stored verbatim in the raw fetch
-  record (so they are re-derivable later) but are not turned into readings
-  by this adapter yet — nothing in the plan consumes them.
+* every entry of the ``minutely_15``, ``hourly`` and ``daily`` blocks that
+  falls strictly after the ``current`` block's own time, as ``kind="forecast"``
+  readings. Each block gets its own ``source`` — ``v1/forecast/minutely_15``,
+  ``v1/forecast/hourly``, ``v1/forecast/daily`` (the ``current`` reading uses
+  ``v1/forecast/current``) — so a client can tell a 15-minute forecast step
+  apart from an hourly or daily one, per ``docs/weather-api.md`` section 3.1's
+  definition of ``source`` as the feed name.
+
+**No provider value is dropped** (``docs/weather-api.md`` section 4). Every
+numeric or coded variable Open-Meteo actually returns is represented in some
+reading, whether or not the shared vocabulary has a row for it: a variable
+with a vocabulary row (``temperature_2m`` -> ``temperature``, ``degC``, …) is
+normalized under its vocabulary id and unit; a variable with no vocabulary
+row (anything not in :data:`_VARIABLE_MAP`) is still emitted, under the id
+``x_<open-meteo-variable-name>``, with ``original_value``/``original_unit``
+verbatim and ``unit`` set to a matching unit id when the provider's own unit
+string is unambiguous, otherwise ``other``. See :func:`_build_values`.
 
 Open-Meteo has no API key. Its documented free-tier budget bills each call
 by ``variables_requested * models_requested / 10`` (minimum 1) rather than a
@@ -28,7 +40,7 @@ come from issue 5's research rather than an official Open-Meteo page, hence
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlencode
 
@@ -101,9 +113,8 @@ _DEFAULT_VARIABLE_COUNT = (
 
 # Open-Meteo variable name -> (vocabulary variable id, vocabulary unit id).
 # Vocabulary per docs/weather-api.md section 4 ("Vocabulary") / 4.1 ("Units").
-# ``showers`` and ``snowfall`` have no vocabulary entry and are intentionally
-# left out: this adapter still requests them (the fixture's request does),
-# but normalize() has nowhere honest to put them.
+# Anything Open-Meteo returns that is *not* in this map still gets emitted
+# (see _build_values) as ``x_<name>`` — the vocabulary is not a filter.
 _VARIABLE_MAP: Mapping[str, tuple[str, str]] = {
     "temperature_2m": ("temperature", "degC"),
     "apparent_temperature": ("apparent_temperature", "degC"),
@@ -116,26 +127,59 @@ _VARIABLE_MAP: Mapping[str, tuple[str, str]] = {
     "wind_direction_10m": ("wind_direction", "deg"),
     "precipitation": ("precipitation", "mm"),
     "rain": ("rain", "mm"),
+    "showers": ("showers", "mm"),
+    "snowfall": ("snowfall", "mm"),
     "precipitation_probability": ("precipitation_probability", "percent"),
     "cloud_cover": ("cloud_cover", "percent"),
+    "cloud_cover_low": ("cloud_cover_low", "percent"),
+    "cloud_cover_mid": ("cloud_cover_medium", "percent"),
+    "cloud_cover_high": ("cloud_cover_high", "percent"),
     "shortwave_radiation": ("shortwave_radiation", "w_m2"),
     "direct_radiation": ("direct_radiation", "w_m2"),
     "diffuse_radiation": ("diffuse_radiation", "w_m2"),
     "uv_index": ("uv_index", "index"),
+    "uv_index_clear_sky": ("uv_index_clear_sky", "index"),
+    "is_day": ("is_day", "index"),
     "weather_code": ("weather_code", "code"),
+    "temperature_2m_max": ("temperature_max", "degC"),
+    "temperature_2m_min": ("temperature_min", "degC"),
+    "precipitation_sum": ("precipitation", "mm"),
 }
 
-# Open-Meteo reports wind in km/h; the vocabulary unit is m/s. Every other
-# mapped variable needs no numeric conversion, only a unit id rename.
+# Numeric conversions applied before the value reaches the vocabulary unit.
+# Open-Meteo reports wind in km/h (vocabulary: m/s) and snowfall in cm
+# (vocabulary: mm, per docs/weather-api.md's "converted to millimetres"
+# note); every other mapped variable needs only a unit id rename.
 _CONVERTERS: Mapping[str, Any] = {
     "wind_speed_10m": lambda value: value / 3.6,
     "wind_gusts_10m": lambda value: value / 3.6,
+    "snowfall": lambda value: value * 10,
 }
 
-#: Default source label: Open-Meteo's own default model family when a
-#: request names none (the plan's "upstream model family reported or
-#: 'best_match'").
-DEFAULT_SOURCE = "best_match"
+# Open-Meteo's own *_units strings that translate to a vocabulary unit id
+# with no numeric conversion — used only for the ``x_`` fallback path, where
+# no per-variable converter is known. A unit not in this table (e.g. the
+# unconverted "km/h" or "cm") falls back to "other", per docs/weather-api.md
+# section 4's rule, rather than guess at a conversion factor.
+_UNIT_ID_BY_DISPLAY: Mapping[str, str] = {
+    "°C": "degC",
+    "%": "percent",
+    "hPa": "hPa",
+    "mm": "mm",
+    "W/m²": "w_m2",
+    "°": "deg",
+    "": "index",
+    "wmo code": "code",
+    "m": "m",
+}
+
+# Feed-name sources (docs/weather-api.md section 3.1: "source" is the
+# provider feed/endpoint by name, never a URL). Distinct per block so a
+# 15-minute forecast step is never confused with an hourly or daily one.
+_SOURCE_CURRENT = "v1/forecast/current"
+_SOURCE_MINUTELY_15 = "v1/forecast/minutely_15"
+_SOURCE_HOURLY = "v1/forecast/hourly"
+_SOURCE_DAILY = "v1/forecast/daily"
 
 
 def call_weight(variable_count: int, model_count: int = 1) -> float:
@@ -225,7 +269,7 @@ class OpenMeteoProvider(WeatherProvider):
         )
 
     def normalize(self, fetch_record: Any) -> Sequence[Reading]:
-        """Turn one stored fetch into a current reading plus hourly forecasts.
+        """Turn one stored fetch into a current reading plus forecast readings.
 
         Pure and re-derivable (spec ``h2``): the same bytes always give the
         same readings. A failed fetch, a ``304`` or an unparseable body
@@ -247,12 +291,18 @@ class OpenMeteoProvider(WeatherProvider):
         if current_reading is None:
             return ()
         readings.append(current_reading)
+        now = current_reading.observed_at
 
-        readings.extend(
-            self._forecast_readings(
-                document, fetch_record, utc_offset_seconds, current_reading.observed_at
+        for block_key, units_key, source in (
+            ("minutely_15", "minutely_15_units", _SOURCE_MINUTELY_15),
+            ("hourly", "hourly_units", _SOURCE_HOURLY),
+            ("daily", "daily_units", _SOURCE_DAILY),
+        ):
+            readings.extend(
+                self._series_readings(
+                    document, fetch_record, utc_offset_seconds, now, block_key, units_key, source
+                )
             )
-        )
         return tuple(readings)
 
     # -- internals ----------------------------------------------------------
@@ -274,7 +324,7 @@ class OpenMeteoProvider(WeatherProvider):
             return None
         return Reading(
             provider=self.id,
-            source=DEFAULT_SOURCE,
+            source=_SOURCE_CURRENT,
             model=None,
             location=fetch_record.location,
             observed_at=observed_at,
@@ -283,28 +333,31 @@ class OpenMeteoProvider(WeatherProvider):
             values=values,
         )
 
-    def _forecast_readings(
+    def _series_readings(
         self,
         document: Mapping[str, Any],
         fetch_record: Any,
         utc_offset_seconds: int,
         now: datetime,
+        block_key: str,
+        units_key: str,
+        source: str,
     ) -> list[Reading]:
-        hourly = document.get("hourly") or {}
-        hourly_units = document.get("hourly_units") or {}
-        times = hourly.get("time") or []
+        block = document.get(block_key) or {}
+        units = document.get(units_key) or {}
+        times = block.get("time") or []
         readings: list[Reading] = []
         for index, time_text in enumerate(times):
             observed_at = _to_utc(time_text, utc_offset_seconds)
             if observed_at <= now:
                 continue
-            values = _build_values(hourly, hourly_units, index=index)
+            values = _build_values(block, units, index=index)
             if not values:
                 continue
             readings.append(
                 Reading(
                     provider=self.id,
-                    source=DEFAULT_SOURCE,
+                    source=source,
                     model=None,
                     location=fetch_record.location,
                     observed_at=observed_at,
@@ -317,14 +370,19 @@ class OpenMeteoProvider(WeatherProvider):
 
 
 def _to_utc(time_text: str, utc_offset_seconds: int) -> datetime:
-    """Open-Meteo's naive ``iso8601`` local time -> timezone-aware UTC.
+    """Open-Meteo's naive local time -> timezone-aware UTC.
 
+    Handles both an ``iso8601`` datetime (``current``/``minutely_15``/
+    ``hourly``) and a bare date (``daily``, taken as that day's midnight).
     ``timezone=UTC`` is requested, so ``utc_offset_seconds`` from the
     response is normally ``0``; the conversion still uses the response's
     own reported offset rather than assuming it, in case a caller's
     settings ever request a different ``timezone``.
     """
-    naive = datetime.fromisoformat(time_text)
+    if "T" in time_text:
+        naive = datetime.fromisoformat(time_text)
+    else:
+        naive = datetime.combine(date.fromisoformat(time_text), datetime.min.time())
     return (naive - timedelta(seconds=utc_offset_seconds)).replace(tzinfo=UTC)
 
 
@@ -336,25 +394,46 @@ def _build_values(
 ) -> dict[str, Measurement]:
     """Map one block's (optionally indexed, for series blocks) variables.
 
-    Only variables in :data:`_VARIABLE_MAP` are kept — unmapped ones
-    (``showers``, ``snowfall``) have no vocabulary entry to normalize into.
-    ``None`` values (a gap in the provider's own data) are skipped rather
-    than stored as zero.
+    Every numeric variable Open-Meteo actually returned is represented: a
+    variable in :data:`_VARIABLE_MAP` is normalized under its vocabulary id
+    and unit (with a converter from :data:`_CONVERTERS` when one applies); a
+    variable with no vocabulary row is still emitted, as ``x_<name>``, with
+    ``original_value``/``original_unit`` verbatim and a unit id from
+    :data:`_UNIT_ID_BY_DISPLAY` when the provider's own unit string is
+    unambiguous, otherwise ``"other"`` — the "no provider value is dropped"
+    rule (docs/weather-api.md section 4). ``time``/``interval`` are metadata,
+    never variables. ``None`` values (a gap in the provider's own data) are
+    skipped rather than stored as zero. A value that cannot be coerced to a
+    float even after that (Open-Meteo has none today) is skipped too:
+    :class:`~climate.weather.store.Measurement` stores ``value`` as a float,
+    so a genuinely non-numeric, unmapped variable would be a real contract
+    gap, not something to fabricate a number for.
     """
     values: dict[str, Measurement] = {}
-    for open_meteo_name, (variable_id, unit_id) in _VARIABLE_MAP.items():
-        if open_meteo_name not in block:
+    for open_meteo_name, raw in block.items():
+        if open_meteo_name in ("time", "interval"):
             continue
-        raw = block[open_meteo_name]
         original_value = raw[index] if index is not None else raw
         if original_value is None:
             continue
-        converter = _CONVERTERS.get(open_meteo_name)
-        value = float(converter(original_value) if converter else original_value)
+        original_unit = units.get(open_meteo_name) or None
+        mapped = _VARIABLE_MAP.get(open_meteo_name)
+        if mapped is not None:
+            variable_id, unit_id = mapped
+            converter = _CONVERTERS.get(open_meteo_name)
+            numeric = converter(original_value) if converter else original_value
+        else:
+            variable_id = f"x_{open_meteo_name}"
+            unit_id = _UNIT_ID_BY_DISPLAY.get(original_unit or "", "other")
+            numeric = original_value
+        try:
+            value = float(numeric)
+        except (TypeError, ValueError):
+            continue
         values[variable_id] = Measurement(
             value=value,
             unit=unit_id,
             original_value=original_value,
-            original_unit=units.get(open_meteo_name) or None,
+            original_unit=original_unit,
         )
     return values
