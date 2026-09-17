@@ -529,14 +529,23 @@ def test_errors_module_imports_only_stdlib_with_third_party_blocked(monkeypatch)
             raise ImportError(f"blocked third-party import inside {module_name}: {name}")
         return real_import(name, globals, locals, fromlist, level)
 
-    sys.modules.pop(module_name, None)
+    # Keep the ORIGINAL module object and put it back afterwards: leaving a
+    # fresh copy in sys.modules would give later-imported modules a different
+    # CliError class than the one other tests already hold (seen as a flaky
+    # ``pytest.raises(CliError)`` miss under pytest-xdist).
+    original = sys.modules.pop(module_name, None)
+    parent = sys.modules.get("climate.cli")
+    original_attr = getattr(parent, "_errors", None) if parent else None
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     try:
         reloaded = importlib.import_module(module_name)
     finally:
         monkeypatch.setattr(builtins, "__import__", real_import)
         sys.modules.pop(module_name, None)
-        importlib.import_module(module_name)
+        if original is not None:
+            sys.modules[module_name] = original
+            if parent is not None and original_attr is not None:
+                parent._errors = original_attr
 
     assert reloaded.EXIT_STALE == 3
     assert reloaded.EXIT_SUCCESS == 0
