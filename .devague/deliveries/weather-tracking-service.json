@@ -1,0 +1,463 @@
+{
+  "plan_slug": "weather-tracking-service",
+  "schema_version": 2,
+  "created": "2026-09-17T19:43:16Z",
+  "updated": "2026-09-17T19:43:47Z",
+  "deviations": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/weather/test_scheduler.py::test_the_raw_record_is_stored_before_normalize_runs + ::test_a_normalize_failure_leaves_the_raw_record_intact_and_is_recorded; live: mongosh re-hash of all 4 stored bodies",
+      "behavior_text": "save_fetch runs before normalize; a raising normalize leaves the raw record; live stored bodies re-hash to their recorded sha256 (IMS XML 30922 bytes)",
+      "contract_text": "The verbatim response body and fetch metadata are written before any parsing",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus a live check against the running stack's MongoDB",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 1
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/weather/test_scheduler.py::test_every_failure_shape_is_stored_as_a_fetch_record + ::test_ac2_one_bad_provider_never_blocks_the_others_and_is_stored; live: openweather 401",
+      "behavior_text": "timeout, transport, 429, 5xx each become a stored fetch record; one bad provider does not block the others; live, a real 401 from OpenWeather was stored as http_error while four other providers fetched normally",
+      "contract_text": "Failures produce stored fetch records and never block other providers",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "parametrized unit tests green plus a real provider failure observed in the live run",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 2
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/weather/test_scheduler.py::test_a_provider_is_not_refetched_before_its_own_interval; tests/weather/providers/test_met_no.py::test_is_due_is_false_before_the_stored_expires_and_true_after + ::test_build_requests_sends_an_identifying_user_agent; live tracker log after restart",
+      "behavior_text": "per-provider due logic; met-no not due before Expires; identifying User-Agent; live, a restarted tracker did not re-fetch providers that were not due (stats showed 1 stored fetch each)",
+      "contract_text": "Every enabled provider is asked whether it is due; met-no honours Expires with If-Modified-Since and User-Agent",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus live restart behaviour",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/weather/test_contract_seams.py::test_request_spec_never_prints_a_live_secret; tests/weather/test_http.py::test_redact_removes_openweather_appid_from_url; tests/weather/test_tracker.py (secret never logged); live grep",
+      "behavior_text": "keys redacted from URLs, headers, reprs and log lines; live, the real OpenWeather key occurs 0 times in tracker and web container logs and the stored endpoint reads appid=REDACTED",
+      "contract_text": "API keys and tokens are redacted from stored URLs, headers, logs and errors",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus a grep for the real key over live container logs and the stored record",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/weather/test_tracker.py (no location exits 2, no fetch); tests/weather/test_config.py::TestQuotaValidation; ::TestConfigPathResolution::test_default_path_is_outside_the_repo_under_xdg_config",
+      "behavior_text": "tracker exits 2 with no location and issues no request; over-budget config rejected naming the provider; config path outside the repo",
+      "contract_text": "Locations come only from user configuration outside the repo; none means exit 2; over-budget refused",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit tests green at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_cli_stack.py::test_stack_down_never_touches_volumes + ::test_stack_module_issues_no_volume_removing_command + ::test_docker_absent_exits_2_with_hint; live stack up twice",
+      "behavior_text": "down never passes a volume flag; missing docker exits 2 with a hint; live, data survived two stack recreations",
+      "contract_text": "Stack verbs act only on this project and never remove the data volume",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus live recreate with data intact",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/weather/test_mongo.py::test_rejects_loopback_and_host_addresses_on_forbidden_ports",
+      "behavior_text": "loopback/host URIs on 27017, 27018, 27019 are refused with exit 2; one connect() choke-point",
+      "contract_text": "Every MongoDB access goes through one function that refuses the sibling ports",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "parametrized unit tests green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_stdlib_only.py::test_host_cli_imports_with_third_party_blocked + ::test_probe_blocker_actually_blocks; tests/weather/test_mongo.py::test_connect_without_pymongo_raises_cli_error_exit_2",
+      "behavior_text": "29 host-side modules import in a fresh interpreter with every third-party import blocked; connect() without pymongo exits 2 with the install command",
+      "contract_text": "Host-side verbs import only the standard library; service code without the extra exits 2",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "subprocess-isolated import test green; pymongo genuinely absent in this environment",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_cli_weather.py::test_latest_fresh_markdown_table + ::test_latest_fresh_json_matches_payload_shape; tests/test_cli_nouns_registered.py::test_weather_latest_max_age_exits_stale; live climate weather latest",
+      "behavior_text": "markdown by default and identical structure under --json with unit, age and provenance; live, real readings from 3 providers, --max-age 60 on a 15-minute-old METAR exited 3 and --max-age 1h exited 0",
+      "contract_text": "latest returns every value with unit, observed_at, age and provenance in markdown and --json",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus live CLI run against the running API",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/weather/web/test_api.py::test_non_get_returns_405 (all routes) + the no-coordinate sweep over every route; tests/weather/test_compose.py::test_web_container_listens_on_all_interfaces_inside_but_maps_to_loopback_outside; live ss/compose ps",
+      "behavior_text": "no write routes; no coordinate in any response; host mapping on 127.0.0.1 by default; live, port published as 127.0.0.1:8095 and the live latest payload contained no coordinate or place name",
+      "contract_text": "The web service is read-only and publishes on loopback by default",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit tests green plus live port binding and payload inspection; the first live run exposed and fixed an in-container loopback bind bug (commit 573f842)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o12",
+      "test_ref": "tests/weather/test_rederive.py (every reading references a resolvable fetch, all 6 adapters); tests/weather/providers/test_ims.py::test_normalize_latest_converts_the_summer_wall_clock_from_utc_plus_2; tests/weather/providers/test_vocabulary_conformance.py",
+      "behavior_text": "readings reference their fetch record; IMS fixed UTC+2 conversion with a summer date; units from the contract table with originals retained",
+      "contract_text": "Each reading references its raw record; IMS times converted from fixed UTC+2; units normalized with the original kept",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit tests green; IMS path verified against a synthesized fixture only (no token yet)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_repo_hygiene.py::test_conftest_blocks_real_socket_connect + ::test_conftest_blocks_create_connection; full suite 791 passed with sockets blocked",
+      "behavior_text": "any test opening a socket fails; the whole suite runs with no network, docker or MongoDB",
+      "contract_text": "No test opens a network socket to a provider or MongoDB",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "suite green under the socket blocker",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_cli_weather.py::test_latest_unreachable_exits_2_with_hint; live: web container stopped",
+      "behavior_text": "unreachable API exits 2 with the stack-status hint, distinct from stale exit 3; live, with weather-web stopped latest exited 2 while the tracker kept collecting, and recovered after restart",
+      "contract_text": "Query verbs use the HTTP API; unreachable exits 2 distinct from stale",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "unit test green plus live container stop/start",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o17",
+      "test_ref": "tests/weather/test_scheduler.py::test_validate_rejects_an_interval_below_the_provider_minimum + ::test_validate_rejects_demand_beyond_the_declared_quota; tests/weather/test_contract_seams.py (interval fallback)",
+      "behavior_text": "too-short interval or over-quota demand rejected with exit 2 naming the provider; unset interval falls back to the adapter default; one provider's settings never alter another's",
+      "contract_text": "Per-provider interval, params and quota from user config with adapter defaults; invalid rejected at startup",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit tests green; live the real user config passed scheduler.validate",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o11",
+      "test_ref": "tests/weather/web/test_api.py::test_series_grid_carries_explicit_nulls_for_missed_ticks",
+      "behavior_text": "the series route returns explicit nulls for missed grid ticks and a kind tag per series",
+      "contract_text": "Series are served with explicit gaps and a kind tag",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "unit test green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o11",
+      "test_ref": "browser observation by the dashboard task agent (Playwright, bundled Chromium) + main agent live screenshots",
+      "behavior_text": "a DOM check found a deliberate gap rendered as two separate SVG paths in one series group and a sparse METAR series as dots, never a line through nulls; observation/model/forecast use solid/dotted/dashed strokes. NOT covered by any automated test - there is no JavaScript test runner in the repo",
+      "contract_text": "the dashboard renders gaps as gaps and never interpolates across them",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "one-off browser observation against synthetic harness data and one live page load; not repeatable in CI",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o13",
+      "test_ref": "python3 scripts/check-culture-design.py (run by the main agent at the named commit); tests/test_culture_design.py; git -C ../org diff --stat",
+      "behavior_text": "tokens.css byte-matches org's global.css at pinned commit b4d939b; ADR records the pin; the org repo shows no change",
+      "contract_text": "tokens.css is a verbatim copy of org's global.css at the pinned commit recorded in an ADR; nothing under ../org or ../culture-nodes is written",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "script exit 0 with a real byte match against the local org checkout",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o13",
+      "test_ref": ".github/workflows/tests.yml (grep for check-culture-design: 0 hits)",
+      "behavior_text": "the check script is NOT wired into CI; CI has no org checkout, where the script would skip anyway, so fidelity is only proven on a machine that has the sibling repo",
+      "contract_text": "verified by a check script in CI",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "inspection of the workflow file",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o8",
+      "test_ref": "superseded - no test asserts this behaviour by design",
+      "behavior_text": "query verbs do NOT need the extra after decision c49 (they use the HTTP API with the standard library); o8 was approved before c49 and could not be rejected afterwards; o15 replaces it and is evidenced separately",
+      "contract_text": "A tracker, query or stack verb invoked without the extra installed exits 2",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "obligation drifted from its claim; recorded as plan risk r5",
+      "outcome": "fail",
+      "run": {
+        "timestamp": "2026-09-17T19:42:40",
+        "commit": "f9c76ea"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "The shared vocabulary is not a filter: an adapter emits every provider variable, using x_<name> with the original value and unit when no vocabulary row exists (18 rows were also added). The plan only said no field is discarded at the raw layer",
+      "caused_by": [
+        "c2"
+      ],
+      "evidence_refs": [
+        "e11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "ims-forecast carries the ordered city candidates in the URL fragment of the stored endpoint, so they are kept for re-derivation but never transmitted to IMS; the first implementation sent them as a query parameter",
+      "caused_by": [
+        "c27"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "Inside the container the web service always listens on 0.0.0.0:8095; loopback-by-default is enforced on the host side of the port mapping, and the stack verbs pass docker/weather.env to compose as --env-file. The planned single CLIMATE_WEB_BIND meaning made the service unreachable live",
+      "caused_by": [
+        "c26"
+      ],
+      "evidence_refs": [
+        "e10"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "The tracker writes a heartbeat with its package version on start and after every tick; both stores gained optional save_heartbeat/latest_heartbeat/size_bytes, and health.tracker_version reads it",
+      "caused_by": [
+        "c45"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "A GET /api/v1/locations route (labels only) beyond the six routes the plan listed, so the dashboard selector and CLI validation have a source",
+      "caused_by": [
+        "c26"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "climate doctor exits 1 only when an error-severity check fails; before this work any failing check failed it. Disabled providers currently show a noisy warning-level FAIL for fetch age",
+      "caused_by": [
+        "c13"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "amended",
+      "behavior_text": "The design-token fidelity check runs locally (and in a test against a fake repo) but is not wired into CI, where no org checkout exists",
+      "caused_by": [
+        "c31"
+      ],
+      "evidence_refs": [
+        "e17"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}
