@@ -2,8 +2,9 @@
 
 The agent-first global verbs (``whoami``, ``learn``, ``explain``, ``overview``,
 ``doctor``) are registered here under :mod:`climate.cli._commands`,
-alongside the ``cli`` noun group. Future noun groups register via their own
-``register()`` functions following the same pattern.
+alongside the ``cli`` introspection noun and the weather-tracker nouns
+``stack``, ``weather``, ``providers`` and ``backup``. Future noun groups
+register via their own ``register()`` functions following the same pattern.
 
 Error propagation contract
 --------------------------
@@ -62,16 +63,23 @@ def _argv_has_json(argv: list[str] | None) -> bool:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from climate.cli._commands import backup as _backup_group
     from climate.cli._commands import cli as _cli_group
     from climate.cli._commands import doctor as _doctor_cmd
     from climate.cli._commands import explain as _explain_cmd
     from climate.cli._commands import learn as _learn_cmd
     from climate.cli._commands import overview as _overview_cmd
+    from climate.cli._commands import providers as _providers_group
+    from climate.cli._commands import stack as _stack_group
+    from climate.cli._commands import weather as _weather_group
     from climate.cli._commands import whoami as _whoami_cmd
 
     parser = _CliArgumentParser(
         prog="climate-cli",
-        description="climate-cli — a clonable template for AgentCulture mesh agents.",
+        description=(
+            "climate-cli — a multi-provider weather tracker and its agent-first CLI: "
+            "run the collection stack, query what it collected, and back it up."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -88,6 +96,13 @@ def _build_parser() -> argparse.ArgumentParser:
     _overview_cmd.register(sub)
     _doctor_cmd.register(sub)
     _cli_group.register(sub)
+    # Weather-tracker noun groups. Each module owns its own verbs, exposes an
+    # `overview`, and supports --json everywhere (see docs/weather-api.md and
+    # the agent-first rubric `teken cli doctor . --strict` enforces).
+    _stack_group.register(sub)
+    _weather_group.register(sub)
+    _providers_group.register(sub)
+    _backup_group.register(sub)
     # Register your own noun groups here:
     #   from climate.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)
@@ -120,10 +135,17 @@ def _dispatch(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Pre-parse peek so argparse-level errors honour --json.
+    # Pre-parse peek so argparse-level errors honour --json. The hint is
+    # class-level state shared by every parser instance, so it is scoped to
+    # this call: leaving it set would make the *next* caller in the same
+    # process (notably a second test in one pytest worker) emit a JSON error
+    # for a text-mode invocation.
     _CliArgumentParser._json_hint = _argv_has_json(argv)
-    parser = _build_parser()
-    args = parser.parse_args(argv)
+    try:
+        parser = _build_parser()
+        args = parser.parse_args(argv)
+    finally:
+        _CliArgumentParser._json_hint = False
 
     if args.command is None:
         parser.print_help()

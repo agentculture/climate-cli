@@ -20,8 +20,11 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
-yaml = pytest.importorskip("yaml", reason="PyYAML is required to parse docker-compose.yml")
+# PyYAML is a declared dev dependency (pyproject's `dev` group), imported
+# outright rather than via importorskip: these are data-safety assertions
+# about the compose file and must never skip themselves away silently.
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"

@@ -55,6 +55,14 @@ def redact(text: str | None) -> str | None:
     Safe to call on a full URL, a header value, or exception text — it only
     replaces the values of known secret-bearing keys (``appid``, ``token``,
     ``api_key``, ...), leaving everything else untouched.
+
+    Sibling: :func:`climate.weather.store.redact_url` is the *storage*
+    layer's redactor. Both exist on purpose. This one is a regex over
+    arbitrary text and never fails on unparseable input, which is what a
+    log line or an exception message needs; ``store.redact_url`` parses the
+    URL properly (userinfo, caller-supplied secret literals) because its
+    output is persisted as ``FetchRecord.endpoint`` and checked for leaks.
+    Use this one for anything logged, that one for anything stored.
     """
     if not text:
         return text

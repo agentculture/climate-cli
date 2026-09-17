@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-09-17
+
+### Added
+
+- **The weather-tracking service.** A `climate-weather` docker compose project (MongoDB + a polling tracker + a read-only web service) samples six free weather providers on their own refresh policies, stores every response **verbatim** (body bytes, status, cache headers, content hash) as the system of record, and derives re-derivable normalized readings from it. Failed fetches are stored too, so a gap in the data is distinguishable from a gap in collection, and nothing is ever back-filled.
+- **Six provider adapters**, auto-discovered by the registry: `open-meteo`, `met-no` (Expires/`If-Modified-Since` conditional GET with an identifying User-Agent), `openweather` (free 2.5 current call), `ims` (Envista stations, token-gated, ships disabled), `metar` (keyless airport observations) and `ims-forecast` (keyless city-forecast XML). Each declares its capabilities, auth requirement, quota, freshness strategy and licence attribution. No provider value is ever dropped: a field with no vocabulary row is stored as `x_<name>`.
+- **Four CLI nouns**, registered in `climate/cli/__init__.py`: `stack up|down|status|overview` (docker compose lifecycle), `weather latest|series|forecast|stats|overview` (queries through the HTTP API — the host CLI never connects to MongoDB), `providers [--limits]` (adapter metadata) and `backup dump|list|restore|overview` (mongodump/mongorestore through `docker compose exec`).
+- **Exit code `3` = stale data.** `climate weather latest --max-age 10m` exits 3 in both markdown and `--json` mode when the freshest reading is older than the threshold, so an agent controlling hardware cannot silently act on a dead tracker's last value.
+- **A read-only HTTP API and a chart-first dashboard** on `http://127.0.0.1:8095` (loopback by default, no authentication — exposing it is an explicit opt-in), documented in `docs/weather-api.md` and built from vanilla ES modules with no Node toolchain.
+- **Location privacy as an enforced invariant**: coordinates rounded to 2 decimals (never more than the 4 MET Norway allows), locations identified by user-chosen label in every API response and dashboard asset, config held outside the repo at `~/.config/climate-cli/weather.json`, keys only in the gitignored `docker/weather.env` — with `tests/test_repo_hygiene.py` failing the build on any coordinate literal in `climate/`, `tests/` or the docker files.
+- **Weather-tracker `doctor` checks** — repo-checkout management, newest fetch age per provider, database size, per-provider credentials and backup freshness — in the existing rubric `{healthy, checks: [...]}` shape.
+- `[project.optional-dependencies] weather = ["pymongo>=4"]` — the container image installs it (`pip install ".[weather]"`); `dependencies` stays empty and `tests/test_stdlib_only.py` proves the host CLI imports with every third-party package blocked, in a subprocess.
+- Explain-catalog entries for every new noun and verb path, plus `tests/test_explain_covers_cli.py`, which walks the real argparse tree and fails on any undocumented path.
+
+### Changed
+
+- **`README.md` and `CLAUDE.md` rewritten for the weather tracker** — quickstart, the CLI table, exit codes, a per-provider section (auth, licence/attribution, freshness strategy and default interval, rate limits with unverified figures marked as such), privacy notes, how to expose the web service and the warning that it has no authentication. No template boilerplate remains in the README, the root explain entry, `learn`, `overview` or the parser description.
+- `sonar-project.properties` excludes `climate/weather/web/static/**` from **coverage only** — the dashboard assets stay in analysis; the repo runs no JS test runner, so they would otherwise redden the quality gate.
+- `main()` now scopes `_CliArgumentParser._json_hint` to a single call, so a `--json` invocation can no longer make the next invocation in the same process emit a JSON error for a text-mode command.
+- `FetchError`'s docstring now names the error kinds the scheduler actually writes (`timeout`, `transport`, `rate_limited`, `http_error`) instead of a different, aspirational set, and `store.redact_url` / `http.redact` cross-reference each other (stored values vs logged text).
+
+### Fixed
+
+- `tests/weather/test_compose.py` imports PyYAML outright instead of `pytest.importorskip`, and `pyyaml` is a declared dev dependency — the compose data-safety assertions can no longer skip themselves away silently.
+
 ## [0.4.0] - 2026-09-17
 
 ### Added

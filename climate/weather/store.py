@@ -127,6 +127,16 @@ def redact_url(
     ``secret_values`` wherever it appears, and URL userinfo.  Everything
     else — path, ordering, other query parameters — is preserved, so the
     stored endpoint stays a faithful record of what was requested.
+
+    Sibling: :func:`climate.weather.http.redact` is the *transport* layer's
+    redactor. Both exist on purpose and neither replaces the other — this
+    one parses a URL properly (userinfo, caller-supplied secret literals,
+    stable re-encoding) because what it returns is persisted as
+    :attr:`FetchRecord.endpoint` and validated against
+    :class:`SecretLeakError`; ``http.redact`` is a cheap regex over
+    arbitrary text (a header value, an exception message, a partial URL)
+    that must never fail on unparseable input. Use this one for anything
+    stored, that one for anything logged.
     """
     secret_names = SECRET_QUERY_PARAMS | {name.lower() for name in extra_params}
     parts = urlsplit(url)
@@ -163,10 +173,19 @@ def _assert_no_secret(url: str) -> None:
 class FetchError:
     """Why a fetch failed, kept alongside the (possibly empty) body.
 
-    ``kind`` is a short machine-readable token such as ``timeout``,
-    ``connection``, ``rate_limited``, ``http_status`` or
-    ``invalid_response``; ``message`` is a human-readable detail that
-    must never contain a credential.
+    ``kind`` is a short machine-readable token. The tokens actually written
+    are the scheduler's four module constants (see
+    :mod:`climate.weather.scheduler`): ``timeout`` (``ERROR_TIMEOUT``),
+    ``transport`` (``ERROR_TRANSPORT`` — connection refused, DNS, TLS),
+    ``rate_limited`` (``ERROR_RATE_LIMITED``, HTTP 429) and ``http_error``
+    (``ERROR_HTTP``, any other non-2xx status). The field is a free string,
+    so another writer may add its own token, but those four are the
+    vocabulary a reader should expect.
+
+    ``message`` is a human-readable detail that must never contain a
+    credential — pass anything URL-shaped through :func:`redact_url` (for a
+    stored value) or :func:`climate.weather.http.redact` (for free text)
+    first.
     """
 
     kind: str

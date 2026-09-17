@@ -1,19 +1,45 @@
 [project]
 name = "climate-cli"
-version = "0.4.0"
-description = "Agent/CLI for climate data and modeling"
+version = "0.5.0"
+description = "Agent and CLI for a multi-provider weather tracker: run the collection stack (MongoDB + tracker + read-only web service), keep every provider response verbatim, and query the collection — latest reading first."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12"
 authors = [{name = "AgentCulture"}]
+keywords = [
+    "weather",
+    "climate",
+    "agent",
+    "cli",
+    "observations",
+    "forecast",
+    "open-meteo",
+    "met-no",
+    "metar",
+    "time-series",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: System :: Monitoring",
     "Topic :: Software Development",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
 ]
 dependencies = []
+
+# The weather-tracking service's storage backend. The host CLI is
+# standard-library only and reaches the collection through the web service's
+# HTTP API, so pymongo lives here rather than in `dependencies`: only the
+# container image installs it (`pip install ".[weather]"`, see Dockerfile) and
+# `climate.weather.mongo` lazy-imports it inside function bodies, so the empty
+# default `dependencies` invariant holds and service code run without the
+# extra exits code 2 with an install hint (never an ImportError traceback).
+[project.optional-dependencies]
+weather = ["pymongo>=4"]
 
 [project.urls]
 Homepage = "https://github.com/agentculture/climate-cli"
@@ -39,6 +65,10 @@ dev = [
     "isort>=5.12.0",
     "black>=23.7.0",
     "teken>=0.8",
+    # tests/weather/test_compose.py parses docker-compose.yml and asserts its
+    # data-safety invariants; it imports yaml outright so the check can never
+    # silently skip itself away.
+    "pyyaml>=6.0",
 ]
 
 [tool.coverage.run]

@@ -18,9 +18,13 @@ from climate.cli._commands.whoami import report
 from climate.cli._output import emit_result
 
 _ARTIFACTS = [
+    "docker-compose.yml + Dockerfile — the climate-weather stack "
+    "(weather-mongodb, weather-tracker, weather-web)",
+    "climate/weather/ — providers, scheduler, store, HTTP API and dashboard",
+    "docs/weather-api.md — the read-only HTTP API contract (base "
+    "http://127.0.0.1:8095, routes under /api/v1)",
     "culture.yaml + CLAUDE.md — mesh identity (suffix + backend)",
     ".claude/skills/ — the canonical guildmaster skill kit (cite-don't-import)",
-    "docs/skill-sources.md — skill provenance ledger",
     "pyproject.toml + .github/workflows/ — buildable, deployable package baseline",
 ]
 
@@ -29,7 +33,14 @@ _VERBS = [
     "learn — structured self-teaching prompt",
     "explain <path> — markdown docs for a topic",
     "overview — this descriptive snapshot",
-    "doctor — check the agent-identity invariants",
+    "doctor — identity + weather-tracker environment checks",
+]
+
+_WEATHER_VERBS = [
+    "stack up|down|status|overview — run the climate-weather compose stack",
+    "weather latest|series|forecast|stats|overview — query the collected data",
+    "providers [--limits] — adapters: capabilities, auth, quota, freshness, attribution",
+    "backup dump|list|restore|overview — local backups of the weather database",
 ]
 
 
@@ -46,8 +57,20 @@ def agent_sections() -> list[dict[str, object]]:
                 f"model: {ident['model']}",
             ],
         },
-        {"title": "Verbs", "items": list(_VERBS)},
-        {"title": "Sibling-pattern artifacts", "items": list(_ARTIFACTS)},
+        {
+            "title": "What it does",
+            "items": [
+                "tracks weather from several free providers into a local docker "
+                "MongoDB, storing every response verbatim",
+                "serves the collection read-only over HTTP, with a dashboard at "
+                "http://127.0.0.1:8095",
+                "'weather latest' is the first-class query: every value carries "
+                "its age and provider",
+            ],
+        },
+        {"title": "Global verbs", "items": list(_VERBS)},
+        {"title": "Weather-tracker nouns", "items": list(_WEATHER_VERBS)},
+        {"title": "Artifacts", "items": list(_ARTIFACTS)},
     ]
 
 
@@ -55,15 +78,19 @@ def cli_sections() -> list[dict[str, object]]:
     """Sections describing the CLI surface itself (used by `cli overview`)."""
     return [
         {
-            "title": "Verbs",
+            "title": "Global verbs",
             "items": list(_VERBS) + ["cli overview — describe the CLI surface (this command)"],
         },
+        {"title": "Weather-tracker nouns", "items": list(_WEATHER_VERBS)},
         {
             "title": "Conventions",
             "items": [
+                "markdown is the default rendering for humans and agents; --json is for code",
                 "every command supports --json",
                 "results to stdout, errors/diagnostics to stderr (never mixed)",
-                "exit codes: 0 success, 1 user error, 2 environment error, 3+ reserved",
+                "exit codes: 0 success, 1 user error, 2 environment error, "
+                "3 stale data (weather latest --max-age), 4+ reserved",
+                "the host CLI is standard-library only; it never imports pymongo",
             ],
         },
     ]
