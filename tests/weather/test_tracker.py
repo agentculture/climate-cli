@@ -29,9 +29,9 @@ from climate.weather import tracker
 from climate.weather.http import FetchResult
 from climate.weather.store import InMemoryWeatherStore
 from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
+from tests.weather.test_mongo import FakeCollection
 
 FAKE_OPENWEATHER_KEY = fake_secret("openweather-key")
-from tests.weather.test_mongo import FakeCollection
 
 # Every provider except one keyless adapter is disabled in these fixtures so
 # a test only has to reason about a single adapter's requests.
