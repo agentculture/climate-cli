@@ -83,7 +83,8 @@ def _provider_class(**overrides: Any) -> type[WeatherProvider]:
     return type("DemoProvider", (WeatherProvider,), attrs)
 
 
-LOCATION = _Location(label="home", latitude=32.08, longitude=34.78)
+_NEUTRAL_POINT = (51.48, -0.0)  # Royal Observatory Greenwich, neutral test point
+LOCATION = _Location("home", *_NEUTRAL_POINT)
 NOW = datetime(2026, 9, 17, 12, 0, tzinfo=UTC)
 
 
@@ -158,7 +159,8 @@ def test_provider_exposes_the_contract_the_brief_names() -> None:
     assert provider.attribution.text
     assert provider.attribution.url
     requests = provider.build_requests(LOCATION, ProviderSettings())
-    assert [r.url for r in requests] == ["https://example.invalid/v1?lat=32.08"]
+    expected = f"https://example.invalid/v1?lat={_NEUTRAL_POINT[0]}"
+    assert [r.url for r in requests] == [expected]
     assert provider.normalize(_FetchRecord(requested_at=NOW)) == ()
 
 
