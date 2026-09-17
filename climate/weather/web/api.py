@@ -97,10 +97,12 @@ MIN_SERIES_STEP_SECONDS = 60
 DEFAULT_SERIES_POINTS = 2000
 MAX_SERIES_POINTS = 10000
 
-#: Hard cap on ``to - from`` for ``/series`` (contract section 2.7). Without
-#: it a caller could name an unbounded window: ``step`` has no maximum, so
-#: bounding the *grid* alone still leaves the store query unbounded.
-MAX_SERIES_SPAN_SECONDS = 366 * 86400
+#: Hard cap on ``to - from`` for every windowed route — ``/series`` and
+#: ``/stats`` (contract section 2.7). Without it a caller names an unbounded
+#: window: ``/series``'s ``step`` has no maximum and ``/stats`` without
+#: ``bucket`` has no grid at all, so bounding the response alone still leaves
+#: the store query unbounded.
+MAX_WINDOW_SPAN_SECONDS = 366 * 86400
 
 #: Hard cap on how many stored points one ``/series`` entry may materialize,
 #: passed to the store as ``limit`` so a dense window cannot pull an
@@ -112,6 +114,11 @@ MAX_FORECAST_HORIZON_HOURS = 168
 
 MIN_STATS_BUCKET_SECONDS = 300
 MAX_STATS_BUCKETS = 1000
+
+#: Hard cap on how many fetch records one ``/stats`` row may materialize.
+#: Lower than the ``/series`` cap on purpose: a ``FetchRecord`` carries the
+#: provider's raw response body, so these are far from free.
+MAX_STATS_FETCH_RECORDS = 20000
 
 #: The HTTP status boundaries ``/stats`` and ``/health`` classify against.
 HTTP_NOT_MODIFIED = 304
@@ -225,6 +232,36 @@ def _age_seconds(now: datetime, observed_at: datetime | None) -> int | None:
     if observed_at is None:
         return None
     return int((now - observed_at).total_seconds())
+
+
+def _validate_span(from_dt: datetime, to_dt: datetime, from_raw: str | None) -> int:
+    """Order and span-cap one ``from``/``to`` window; return its length.
+
+    Shared by every windowed route (``/series``, ``/stats``): an untrusted,
+    unbounded span is what let a single request iterate the whole store.
+    """
+    if from_dt >= to_dt:
+        raise ApiError(
+            "invalid_parameter",
+            "from must be earlier than to",
+            400,
+            {"parameter": "from", "value": from_raw},
+        )
+    span_seconds = int((to_dt - from_dt).total_seconds())
+    if span_seconds > MAX_WINDOW_SPAN_SECONDS:
+        raise ApiError(
+            "invalid_parameter",
+            f"to - from must not exceed {MAX_WINDOW_SPAN_SECONDS} seconds "
+            f"({MAX_WINDOW_SPAN_SECONDS // 86400} days)",
+            400,
+            {
+                "parameter": "from",
+                "value": from_raw if from_raw else _format_time(from_dt),
+                "span_seconds": span_seconds,
+                "max_span_seconds": MAX_WINDOW_SPAN_SECONDS,
+            },
+        )
+    return span_seconds
 
 
 def _parse_time_param(name: str, value: str) -> datetime:
@@ -977,27 +1014,7 @@ def _series_window(
     to_dt = _parse_time_param("to", to_raw) if to_raw else now
     from_raw = get_str(query_params, "from")
     from_dt = _parse_time_param("from", from_raw) if from_raw else to_dt - timedelta(hours=24)
-    if from_dt >= to_dt:
-        raise ApiError(
-            "invalid_parameter",
-            "from must be earlier than to",
-            400,
-            {"parameter": "from", "value": from_raw},
-        )
-    span_seconds = int((to_dt - from_dt).total_seconds())
-    if span_seconds > MAX_SERIES_SPAN_SECONDS:
-        raise ApiError(
-            "invalid_parameter",
-            f"to - from must not exceed {MAX_SERIES_SPAN_SECONDS} seconds "
-            f"({MAX_SERIES_SPAN_SECONDS // 86400} days)",
-            400,
-            {
-                "parameter": "from",
-                "value": _format_time(from_dt),
-                "span_seconds": span_seconds,
-                "max_span_seconds": MAX_SERIES_SPAN_SECONDS,
-            },
-        )
+    _validate_span(from_dt, to_dt, from_raw)
     return from_dt, to_dt
 
 
@@ -1379,22 +1396,35 @@ def _parse_window(text: str) -> int:
 def _build_stat_buckets(
     records: list, from_dt: datetime, to_dt: datetime, bucket_seconds: int, interval_seconds: int
 ) -> list:
+    """Bucket the window in ONE pass over ``records``.
+
+    Scanning every record once per bucket was ``O(buckets x records)`` — with
+    the documented ceilings that is 1000 x 20000 comparisons for a single
+    row. Each record instead names its own bucket arithmetically.
+    """
     due_per_bucket = int(bucket_seconds // interval_seconds) if interval_seconds else 0
-    buckets = []
-    t = from_dt
-    while t < to_dt:
-        bucket_end = min(t + timedelta(seconds=bucket_seconds), to_dt)
-        in_bucket = [record for record in records if t <= record.requested_at < bucket_end]
-        buckets.append(
-            {
-                "t": _format_time(t),
-                "due_count": due_per_bucket,
-                "stored_count": len(in_bucket),
-                "ok_count": sum(1 for record in in_bucket if _is_ok(record.status)),
-            }
-        )
-        t = bucket_end
-    return buckets
+    span = (to_dt - from_dt).total_seconds()
+    bucket_count = max(0, -(-int(span) // bucket_seconds))  # ceil
+
+    stored = [0] * bucket_count
+    ok = [0] * bucket_count
+    for record in records:
+        offset = (record.requested_at - from_dt).total_seconds()
+        if offset < 0 or offset >= span:
+            continue
+        index = int(offset) // bucket_seconds
+        stored[index] += 1
+        ok[index] += 1 if _is_ok(record.status) else 0
+
+    return [
+        {
+            "t": _format_time(from_dt + timedelta(seconds=index * bucket_seconds)),
+            "due_count": due_per_bucket,
+            "stored_count": stored[index],
+            "ok_count": ok[index],
+        }
+        for index in range(bucket_count)
+    ]
 
 
 def _stats_window(
@@ -1407,14 +1437,7 @@ def _stats_window(
         from_dt = _parse_time_param("from", from_raw)
     else:
         from_dt = to_dt - timedelta(seconds=_parse_window(get_str(query_params, "window") or "24h"))
-    if from_dt >= to_dt:
-        raise ApiError(
-            "invalid_parameter",
-            "from must be earlier than to",
-            400,
-            {"parameter": "from", "value": from_raw},
-        )
-    return from_dt, to_dt, int((to_dt - from_dt).total_seconds())
+    return from_dt, to_dt, _validate_span(from_dt, to_dt, from_raw)
 
 
 def _stats_bucket(query_params: Mapping[str, Sequence[str]], window_seconds: int) -> int | None:
@@ -1475,14 +1498,30 @@ def _stats_row(
     window_seconds: int,
     bucket: int | None,
     now: datetime,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], bool]:
+    """One ``/stats`` row, plus whether the record read hit its cap.
+
+    ``stored_count`` comes from a *count* query, so it stays exact however
+    many records the window holds; only the fields that need the records
+    themselves are bounded by ``MAX_STATS_FETCH_RECORDS``.
+    """
     pid = provider.id
-    records = list(
-        _store_call(store.iter_fetches, provider=pid, location=label, since=from_dt, until=to_dt)
+    stored_count = _store_call(
+        store.count_fetches, provider=pid, location=label, since=from_dt, until=to_dt
     )
+    records = list(
+        _store_call(
+            store.iter_fetches,
+            provider=pid,
+            location=label,
+            since=from_dt,
+            until=to_dt,
+            limit=MAX_STATS_FETCH_RECORDS,
+        )
+    )
+    capped = stored_count > len(records)
     interval_seconds = provider.interval_seconds(settings)
     due_count = int(window_seconds // interval_seconds) if interval_seconds else 0
-    stored_count = len(records)
 
     row: dict[str, Any] = {
         "provider": pid,
@@ -1504,12 +1543,23 @@ def _stats_row(
     row["buckets"] = (
         _build_stat_buckets(records, from_dt, to_dt, bucket, interval_seconds) if bucket else None
     )
-    return row
+    return row, capped
 
 
-def _stats_warnings(row: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _stats_warnings(row: Mapping[str, Any], capped: bool) -> list[dict[str, Any]]:
     pid, label = row["provider"], row["location"]
     warnings = []
+    if capped:
+        warnings.append(
+            _warning(
+                "truncated",
+                f"{pid} has {row['stored_count']} fetches in this window; the newest "
+                f"{MAX_STATS_FETCH_RECORDS} were read. stored_count and completeness are "
+                "exact; the status, bytes, cadence and bucket figures cover those records.",
+                provider=pid,
+                location=label,
+            )
+        )
     if row["due_estimated"]:
         warnings.append(
             _warning(
@@ -1545,7 +1595,7 @@ def stats(
     warnings: list[dict[str, Any]] = []
 
     for pid, label in product(requested_providers, requested_locations):
-        row = _stats_row(
+        row, capped = _stats_row(
             store,
             provider_by_id[pid],
             config.providers.get(pid),
@@ -1557,7 +1607,7 @@ def stats(
             now=now,
         )
         rows.append(row)
-        warnings.extend(_stats_warnings(row))
+        warnings.extend(_stats_warnings(row, capped))
 
     total_due = sum(row["due_count"] for row in rows)
     total_stored = sum(row["stored_count"] for row in rows)

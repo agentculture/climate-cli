@@ -434,7 +434,7 @@ def test_series_rejects_a_window_longer_than_the_documented_maximum(
     store, config, providers
 ) -> None:
     """qodo-4: an unbounded span is what let the store query run unbounded."""
-    span = timedelta(seconds=api.MAX_SERIES_SPAN_SECONDS + 1)
+    span = timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS + 1)
     query = {
         "variable": ["temperature"],
         "from": [api._format_time(NOW - span)],
@@ -443,8 +443,8 @@ def test_series_rejects_a_window_longer_than_the_documented_maximum(
     status, body = api.series(store, config, providers, query, NOW)
     assert status == 400
     assert body["error"]["code"] == "invalid_parameter"
-    assert str(api.MAX_SERIES_SPAN_SECONDS) in body["error"]["message"]
-    assert body["error"]["detail"]["max_span_seconds"] == api.MAX_SERIES_SPAN_SECONDS
+    assert str(api.MAX_WINDOW_SPAN_SECONDS) in body["error"]["message"]
+    assert body["error"]["detail"]["max_span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS
 
 
 def test_series_multi_year_window_at_minimum_step_answers_promptly(
@@ -477,7 +477,7 @@ def test_series_largest_allowed_window_at_minimum_step_answers_promptly(
     only ``max_points`` of them may ever be allocated."""
     query = {
         "variable": ["temperature"],
-        "from": [api._format_time(NOW - timedelta(seconds=api.MAX_SERIES_SPAN_SECONDS))],
+        "from": [api._format_time(NOW - timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS))],
         "to": [api._format_time(NOW)],
         "step": [str(api.MIN_SERIES_STEP_SECONDS)],
         # Ask for more than the ceiling: it is clamped, never honoured.
@@ -827,6 +827,107 @@ def test_stats_rejects_bad_window(store, config, providers) -> None:
 def test_stats_bucket_must_meet_minimum(store, config, providers) -> None:
     status, body = api.stats(store, config, providers, {"bucket": ["10"]}, NOW)
     assert status == 400
+
+
+def _save_fetches(store: InMemoryWeatherStore, count: int, *, spacing_seconds: int = 900) -> None:
+    """``count`` bare fetch records ending just before ``NOW``."""
+    for index in range(count):
+        store.save_fetch(
+            FetchRecord(
+                provider="test-model",
+                endpoint="https://example.test/test-model",
+                location=NEUTRAL_LABEL,
+                requested_at=NOW - timedelta(seconds=(index + 1) * spacing_seconds),
+                status=200,
+                body=b"{}",
+            )
+        )
+
+
+def test_stats_rejects_a_window_longer_than_the_documented_maximum(
+    store, config, providers
+) -> None:
+    """Same defect class as the /series span: an untrusted window with no
+    ``bucket`` iterated the store with nothing bounding it."""
+    span = timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS + 1)
+    query = {"from": [api._format_time(NOW - span)], "to": [api._format_time(NOW)]}
+    status, body = api.stats(store, config, providers, query, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert str(api.MAX_WINDOW_SPAN_SECONDS) in body["error"]["message"]
+    assert body["error"]["detail"]["max_span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS
+    assert body["error"]["detail"]["span_seconds"] == api.MAX_WINDOW_SPAN_SECONDS + 1
+
+
+def test_stats_rejects_a_multi_year_window_spelled_as_a_duration(store, config, providers) -> None:
+    status, body = api.stats(store, config, providers, {"window": ["3650d"]}, NOW)
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+
+
+def test_stats_multi_year_window_answers_promptly(store, config, providers) -> None:
+    _save_fetches(store, 2000)
+    query = {
+        "from": [api._format_time(NOW - timedelta(days=5 * 365))],
+        "to": [api._format_time(NOW)],
+    }
+    started = time.perf_counter()
+    status, body = api.stats(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 400
+    assert body["error"]["code"] == "invalid_parameter"
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_stats_largest_allowed_window_answers_promptly_over_many_records(
+    store, config, providers
+) -> None:
+    """The widest accepted window, the finest bucket grid, a full store."""
+    _save_fetches(store, 3000, spacing_seconds=60)
+    query = {
+        "provider": ["test-model"],
+        "location": [NEUTRAL_LABEL],
+        "from": [api._format_time(NOW - timedelta(seconds=api.MAX_WINDOW_SPAN_SECONDS))],
+        "to": [api._format_time(NOW)],
+        "bucket": [str(api.MAX_WINDOW_SPAN_SECONDS // api.MAX_STATS_BUCKETS + 1)],
+    }
+    started = time.perf_counter()
+    status, body = api.stats(store, config, providers, query, NOW)
+    elapsed = time.perf_counter() - started
+    assert status == 200
+    row = body["providers"][0]
+    assert row["stored_count"] == 3000
+    assert sum(b["stored_count"] for b in row["buckets"]) == 3000
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+
+
+def test_stats_uses_a_count_query_and_a_bounded_record_read(store, config, providers) -> None:
+    seen: dict[str, object] = {}
+
+    class _RecordingStore(InMemoryWeatherStore):
+        def iter_fetches(self, **kwargs):
+            seen.update(kwargs)
+            return super().iter_fetches(**kwargs)
+
+    recording = _RecordingStore()
+    status, _ = api.stats(recording, config, providers, {}, NOW)
+    assert status == 200
+    assert seen["limit"] == api.MAX_STATS_FETCH_RECORDS
+
+
+def test_stats_caps_the_records_it_reads_and_says_so(store, config, providers, monkeypatch) -> None:
+    monkeypatch.setattr(api, "MAX_STATS_FETCH_RECORDS", 3)
+    _save_fetches(store, 10, spacing_seconds=60)
+    query = {"provider": ["test-model"], "location": [NEUTRAL_LABEL], "window": ["24h"]}
+    status, body = api.stats(store, config, providers, query, NOW)
+    assert status == 200
+    row = body["providers"][0]
+    # Exact, because it comes from a count query rather than the records.
+    assert row["stored_count"] == 10
+    # Derived from the newest 3 records only.
+    assert row["ok_count"] == 3
+    truncated = next(w for w in body["warnings"] if w["code"] == "truncated")
+    assert truncated["provider"] == "test-model"
 
 
 # --- privacy: no coordinate ever leaves any route -----------------------------

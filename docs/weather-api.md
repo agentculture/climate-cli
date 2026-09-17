@@ -124,16 +124,24 @@ The API paginates nothing. It bounds result size instead, and says when it did:
 - `series` returns at most `max_points` points per series (default `2000`, hard
   ceiling `10000`). The grid is **sized arithmetically before it is built**, so
   a window naming millions of buckets never allocates more than the ceiling.
-- `series` accepts a span (`to - from`) of at most **`31622400` seconds
-  (366 days)**. A longer span is rejected with `invalid_parameter`, whose
-  `detail` carries `span_seconds` and `max_span_seconds`. The cap exists
-  because `step` has no maximum: bounding the grid alone would still leave the
-  store query unbounded.
+- Every windowed route — `series` and `stats` — accepts a span (`to - from`,
+  however it was spelled, `stats`'s `window` included) of at most
+  **`31622400` seconds (366 days)**. A longer span is rejected with
+  `invalid_parameter`, whose `detail` carries `span_seconds` and
+  `max_span_seconds`. The cap exists because neither route's response size
+  bounds its store query: `series`'s `step` has no maximum, and `stats`
+  without a `bucket` has no grid at all.
 - `series` truncation keeps the **earliest** buckets. The response's `to` then
   reports the end of the window actually returned, not the one requested, and
   the store is queried only over that narrowed window.
 - One `series` entry materializes at most `100000` stored points; a series that
   hits the cap keeps its oldest points and adds a `truncated` warning.
+- One `stats` row materializes at most `20000` fetch records — fewer than the
+  `series` cap because a fetch record carries the provider's raw response
+  body. `stored_count` and `completeness` come from a *count* query and stay
+  exact however many records the window holds; when the cap applies, the
+  newest `20000` records are read, the status, `bytes_stored`, cadence and
+  `buckets` figures describe those, and a `truncated` warning names the row.
 - `forecast` returns at most `168` hours of horizon, **measured from
   `generated_at`**, not from the issue time.
 - When a bound truncated the result, the response's `warnings` array carries a
@@ -1153,6 +1161,16 @@ from the schedule alone.
 | `provider` | string, repeatable | all registered | |
 | `location` | string, repeatable | all | |
 | `bucket` | integer seconds | unset | When given, adds a `buckets` array per provider for a collection-health chart. Must be `>= 300`, and the window divided by `bucket` must not exceed `1000` |
+
+`from` must be earlier than `to`, and the window — whether it came from
+`window` or from `from`/`to` — must not exceed the span cap in
+[section 2.7](#27-limits); otherwise `invalid_parameter`, with `span_seconds`
+and `max_span_seconds` in `detail`.
+
+Within an accepted window, `stored_count` and `completeness` come from a count
+query, and at most `20000` fetch records per row are read for the remaining
+figures; a row that hits that cap carries a `truncated` warning naming it (see
+[section 2.7](#27-limits)).
 
 #### 5.7.2 Response
 
