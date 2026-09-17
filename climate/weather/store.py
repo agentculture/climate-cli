@@ -371,6 +371,15 @@ class Reading:
         for observations, target time for forecasts), UTC.
     :param requested_at: when the underlying fetch was issued, UTC.  Kept
         distinct from ``observed_at`` so staleness is measurable.
+    :param model_run_at: the **provider's** model issue / run time, UTC —
+        the instant the provider says the model run this reading comes from
+        was issued.  It is *not* ``requested_at`` (when we downloaded the
+        response) and *not* ``observed_at`` (what time the values apply
+        to).  ``None`` means the provider stated no issue time: adapters
+        set this only when the response actually carries one, and never
+        substitute the fetch time for it.  Documents written before this
+        field existed (``schema_version`` 1) have no ``model_run_at`` key
+        and read back as ``None``.
     :param kind: ``observation`` | ``model`` | ``forecast``.
     :param values: variable name -> :class:`Measurement`, copied on
         construction.
@@ -385,6 +394,7 @@ class Reading:
     location: str
     observed_at: datetime
     requested_at: datetime
+    model_run_at: datetime | None = None
     kind: ReadingKind = "observation"
     values: Mapping[str, Measurement]
     schema_version: int = SCHEMA_VERSION
@@ -401,6 +411,8 @@ class Reading:
             raise ValueError("Reading.values must not be empty")
         object.__setattr__(self, "observed_at", _to_utc(self.observed_at, "observed_at"))
         object.__setattr__(self, "requested_at", _to_utc(self.requested_at, "requested_at"))
+        if self.model_run_at is not None:
+            object.__setattr__(self, "model_run_at", _to_utc(self.model_run_at, "model_run_at"))
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
 
     def age(self, *, now: datetime | None = None) -> timedelta:
@@ -418,6 +430,7 @@ class Reading:
             "location": self.location,
             "observed_at": self.observed_at,
             "requested_at": self.requested_at,
+            "model_run_at": self.model_run_at,
             "kind": self.kind,
             "values": {name: value.to_document() for name, value in self.values.items()},
             "schema_version": self.schema_version,
@@ -439,6 +452,8 @@ class Reading:
             location=str(document["location"]),
             observed_at=document["observed_at"],
             requested_at=document["requested_at"],
+            # Absent in every document written before this field existed.
+            model_run_at=document.get("model_run_at"),
             kind=document.get("kind", "observation"),
             values={
                 name: Measurement.from_document(value) for name, value in document["values"].items()
@@ -449,7 +464,13 @@ class Reading:
 
 @dataclass(frozen=True, slots=True)
 class SeriesPoint:
-    """One point of a variable's time series, carrying its provenance."""
+    """One point of a variable's time series, carrying its provenance.
+
+    ``model_run_at`` is the provider's own model issue / run time for the
+    reading this point came from (see :attr:`Reading.model_run_at`), or
+    ``None`` when the provider stated none.  It is a *trailing* field with
+    a default so existing positional construction keeps working.
+    """
 
     observed_at: datetime
     value: float
@@ -459,6 +480,7 @@ class SeriesPoint:
     model: str | None
     kind: ReadingKind
     fetch_id: str
+    model_run_at: datetime | None = None
 
 
 @runtime_checkable
@@ -530,7 +552,13 @@ class WeatherStore(Protocol):
     def replace_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
         """Re-derivation: swap all readings of ``fetch_id`` for ``readings``.
 
-        The raw record is never modified.
+        The raw record is never modified.  The swap is **all-or-nothing**:
+        every replacement is validated (the fetch exists, no reading is
+        bound to a different fetch) and persisted before the previous
+        readings are removed, so a refused or failed replacement leaves the
+        existing set intact rather than destroying re-derivable history on
+        the way to discovering the problem.  The same exceptions as
+        :meth:`save_readings` are raised, and nothing is stored when one is.
         """
 
     def readings_for_fetch(self, fetch_id: str) -> list[Reading]:
@@ -689,7 +717,14 @@ class InMemoryWeatherStore:
 
     # --- normalized readings ---------------------------------------------
 
-    def save_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
+    def _prepare_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[Reading]:
+        """Validate *readings* against *fetch_id* and stamp ids on them.
+
+        Every check that can refuse the write happens here, before any
+        caller mutates stored state — which is what lets
+        :meth:`replace_readings` validate the whole replacement set before
+        it drops the existing one.
+        """
         if fetch_id not in self._fetches:
             raise UnknownFetchError(
                 f"no fetch record {fetch_id!r}: save the raw response before its readings"
@@ -701,18 +736,29 @@ class InMemoryWeatherStore:
                     f"reading is bound to fetch {reading.fetch_id!r}, not {fetch_id!r}"
                 )
             prepared.append(replace(reading, id=self._new_id(), fetch_id=fetch_id))
+        return prepared
+
+    def save_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
+        prepared = self._prepare_readings(fetch_id, readings)
         for reading in prepared:
             self._readings[reading.id] = reading
         return [reading.id for reading in prepared]
 
     def replace_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
-        if fetch_id not in self._fetches:
-            raise UnknownFetchError(f"no fetch record {fetch_id!r}")
-        for reading_id in [
+        # All-or-nothing: the complete replacement set is validated and
+        # prepared *first*, so a refused replacement (unknown fetch, a
+        # reading bound to another fetch) leaves the existing readings
+        # exactly as they were rather than deleting them on the way to
+        # discovering the problem.
+        prepared = self._prepare_readings(fetch_id, readings)
+        stale_ids = [
             reading.id for reading in self._readings.values() if reading.fetch_id == fetch_id
-        ]:
+        ]
+        for reading_id in stale_ids:
             del self._readings[reading_id]
-        return self.save_readings(fetch_id, readings)
+        for reading in prepared:
+            self._readings[reading.id] = reading
+        return [reading.id for reading in prepared]
 
     def readings_for_fetch(self, fetch_id: str) -> list[Reading]:
         return [reading for reading in self._readings.values() if reading.fetch_id == fetch_id]
@@ -775,6 +821,7 @@ class InMemoryWeatherStore:
                 model=reading.model,
                 kind=reading.kind,
                 fetch_id=reading.fetch_id,
+                model_run_at=reading.model_run_at,
             )
             for reading in matches
         ]
