@@ -2,11 +2,33 @@
 
 Fetches the raw METAR/decoded-JSON feed for a set of configured ICAO station
 codes (spec ``c8``). There is no default station anywhere in this module: a
-user configures ``params["stations"]`` (a list of ICAO codes such as
-``["LLBG"]``) or the adapter simply has nothing to ask for, and
-:meth:`MetarProvider.build_requests` returns no requests at all.
+user configures ``params["stations"]`` or the adapter simply has nothing to
+ask for, and :meth:`MetarProvider.build_requests` returns no requests at all.
 
-One HTTP request covers every configured station (``ids=A,B,C``);
+Station selection is **per location**
+-------------------------------------
+Scheduling is per configured location, so the stations are too.
+``params["stations"]`` accepts either shape:
+
+``{"<location label>": ["LLBG", ...], ...}`` (a mapping)
+    The precise form. Each location requests — and therefore stores readings
+    for — only the stations listed under its own label. A configured
+    location with no entry in the mapping (or an empty one) emits **no
+    request at all**, rather than silently inheriting another location's
+    stations.
+``["LLBG", ...]`` (a plain list)
+    The documented single-location convenience: the list serves *every*
+    configured location. It is kept so that a single-location config stays a
+    one-liner, but with more than one location every location then fetches
+    and stores the same stations — use the mapping form instead.
+
+Before this was per location, one global list was fetched once per location
+and every station's report was stored under each location's label.
+
+One HTTP request covers every station selected for that location
+(``ids=A,B,C``), so the adapter still costs one request per location per
+tick (the base :meth:`~climate.weather.providers.base.WeatherProvider\
+.requests_per_tick` of ``1``);
 :meth:`MetarProvider.normalize` turns each object in the JSON array response
 into one :class:`~climate.weather.store.Reading` of
 ``kind="observation"``, keyed as ``metar/<ICAO>`` so multiple stations never
@@ -40,6 +62,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -83,6 +106,23 @@ _CAMEL_RUN_RE = re.compile(r"(?<!^)(?=[A-Z])")
 def _field_to_snake(name: str) -> str:
     """``"qcField"`` -> ``"qc_field"``; already-lower names pass through."""
     return _CAMEL_RUN_RE.sub("_", name).lower()
+
+
+def _stations_for(configured: Any, location_label: str) -> list[str]:
+    """The ICAO codes ``location_label`` owns, from either configured shape.
+
+    A mapping is per location: only this label's own entry is used, and a
+    label absent from it selects nothing (no request). A plain list is the
+    documented single-location convenience and serves every location — see
+    the module docstring.
+    """
+    if isinstance(configured, Mapping):
+        selected: Any = configured.get(location_label) or ()
+    else:
+        selected = configured or ()
+    if isinstance(selected, str):
+        selected = [selected]
+    return [str(station).strip() for station in selected if station]
 
 
 class MetarProvider(WeatherProvider):
@@ -130,21 +170,29 @@ class MetarProvider(WeatherProvider):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
-    ) -> tuple[RequestSpec, ...]:
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Sequence[RequestSpec]:
+        """One request for the stations *this* location selected, if any.
+
+        ``env`` is accepted for the contract's sake and ignored: METAR is
+        keyless, so this adapter never reads a credential.
+        """
+        del env
         params = dict(getattr(settings, "params", None) or {})
-        stations = [str(station).strip() for station in (params.get("stations") or []) if station]
+        stations = _stations_for(params.get("stations"), location.label)
         if not stations:
-            return ()
+            return []
         url = f"{_ENDPOINT}?ids={','.join(stations)}&format=json"
-        return (
+        return [
             RequestSpec(
                 provider_id=self.id,
                 location_label=location.label,
                 url=url,
                 purpose="metar",
                 context={"stations": tuple(stations)},
-            ),
-        )
+            )
+        ]
 
     def normalize(self, fetch_record: FetchRecordLike) -> tuple[ReadingLike, ...]:
         status = getattr(fetch_record, "status", None)

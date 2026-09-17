@@ -35,8 +35,21 @@ Two Envista endpoints are used (base ``https://api.ims.gov.il/v1/envista/``):
 
 Station choice per location
 ----------------------------
-``settings.params["station_ids"]``, when set, is used verbatim (a list of
-station ids) and skips discovery entirely. Otherwise the adapter picks the
+``settings.params["station_ids"]``, when set, is used verbatim and skips
+discovery entirely. Scheduling is per configured location, so the setting is
+read per location and accepts either shape:
+
+``{"<location label>": [id, ...], ...}`` (a mapping)
+    The precise form: each location queries only the stations listed under
+    its own label, so one location can never store another's stations. A
+    configured location with no entry in the mapping (or an empty one)
+    emits **no request at all** — it does not fall back to discovery.
+``[id, ...]`` (a plain list)
+    The documented single-location convenience: those ids serve every
+    configured location. Kept so a single-location config stays a one-liner;
+    prefer the mapping form once there is more than one location.
+
+With no ``station_ids`` at all the adapter picks the
 ``settings.params.get("station_count", DEFAULT_NEAREST_STATIONS)`` nearest
 *active* stations to the location by great-circle (haversine) distance,
 computed from the cached station metadata. ``settings.params
@@ -72,7 +85,7 @@ from __future__ import annotations
 
 import json
 import math
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -101,6 +114,13 @@ DEFAULT_NEAREST_STATIONS = 2
 #: Mean Earth radius used for the haversine distance, in kilometres.
 _EARTH_RADIUS_KM = 6371.0
 
+#: The service's own spelling of the radiation unit, as it appears in the
+#: ``stations`` endpoint's ``monitors[].units`` for Grad/DiffR/NIP.
+_PROVIDER_RADIATION_UNIT = "w/m^2"
+
+#: Canonical radiation unit id (``docs/weather-api.md`` section 4.1).
+_RADIATION_UNIT = "w_m2"
+
 #: Documented Envista channel name -> (canonical variable id, canonical
 #: unit, provider's own unit) — from the vendor PDF's Appendix C and
 #: confirmed against ``tests/fixtures/ims_stations.json``'s ``monitors``.
@@ -124,9 +144,9 @@ _CHANNEL_MAP: dict[str, tuple[str, str, str]] = {
     "STDwd": ("wind_direction_std", "deg", "deg"),
     "Rain": ("rain", "mm", "mm"),
     "BP": ("pressure_surface", "hPa", "hPa"),
-    "Grad": ("shortwave_radiation", "w_m2", "w/m^2"),
-    "DiffR": ("diffuse_radiation", "w_m2", "w/m^2"),
-    "NIP": ("direct_normal_radiation", "w_m2", "w/m^2"),
+    "Grad": ("shortwave_radiation", _RADIATION_UNIT, _PROVIDER_RADIATION_UNIT),
+    "DiffR": ("diffuse_radiation", _RADIATION_UNIT, _PROVIDER_RADIATION_UNIT),
+    "NIP": ("direct_normal_radiation", _RADIATION_UNIT, _PROVIDER_RADIATION_UNIT),
 }
 
 #: Provider unit tokens (as they appear in the ``stations`` endpoint's
@@ -143,8 +163,8 @@ _UNIT_ALIASES: dict[str, str] = {
     "m/s": "m_s",
     "deg": "deg",
     "mm": "mm",
-    "w/m^2": "w_m2",
-    "w/m2": "w_m2",
+    _PROVIDER_RADIATION_UNIT: _RADIATION_UNIT,
+    "w/m2": _RADIATION_UNIT,
     "m": "m",
 }
 
@@ -168,47 +188,63 @@ class _StationInfo:
     channels: dict[int, _ChannelInfo] = field(default_factory=dict)
 
 
+def _parse_station_coordinates(station: dict[str, Any]) -> tuple[float, float]:
+    """One station's ``(latitude, longitude)``, ``(0.0, 0.0)`` when unusable."""
+    location = station.get("location") or {}
+    try:
+        return float(location.get("latitude", 0.0)), float(location.get("longitude", 0.0))
+    except (TypeError, ValueError):
+        return 0.0, 0.0
+
+
+def _parse_station_channels(station: dict[str, Any]) -> dict[int, _ChannelInfo]:
+    """One station's ``monitors`` as ``channel id -> channel identity``."""
+    channels: dict[int, _ChannelInfo] = {}
+    for monitor in station.get("monitors") or []:
+        if not isinstance(monitor, dict):
+            continue
+        channel_id = monitor.get("channelId")
+        name = monitor.get("name")
+        if channel_id is None or not name:
+            continue
+        try:
+            channels[int(channel_id)] = _ChannelInfo(name=str(name), unit=monitor.get("units"))
+        except (TypeError, ValueError):
+            continue
+    return channels
+
+
+def _parse_station(raw: Any) -> _StationInfo | None:
+    """One ``stations`` entry, or ``None`` when it is not usable metadata."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        station_id = int(raw["stationId"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    latitude, longitude = _parse_station_coordinates(raw)
+    return _StationInfo(
+        station_id=station_id,
+        active=bool(raw.get("active", True)),
+        latitude=latitude,
+        longitude=longitude,
+        channels=_parse_station_channels(raw),
+    )
+
+
 def _parse_stations_payload(raw: Any) -> dict[int, _StationInfo]:
     """Parse a ``stations`` endpoint list (or override) into id -> metadata.
 
     Silently skips malformed entries rather than raising: metadata parsing
     must never take the whole tick down over one bad record.
     """
-    parsed: dict[int, _StationInfo] = {}
     if not isinstance(raw, list):
-        return parsed
-    for station in raw:
-        if not isinstance(station, dict):
-            continue
-        try:
-            station_id = int(station["stationId"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        location = station.get("location") or {}
-        try:
-            latitude = float(location.get("latitude", 0.0))
-            longitude = float(location.get("longitude", 0.0))
-        except (TypeError, ValueError):
-            latitude = longitude = 0.0
-        channels: dict[int, _ChannelInfo] = {}
-        for monitor in station.get("monitors") or []:
-            if not isinstance(monitor, dict):
-                continue
-            channel_id = monitor.get("channelId")
-            name = monitor.get("name")
-            if channel_id is None or not name:
-                continue
-            try:
-                channels[int(channel_id)] = _ChannelInfo(name=str(name), unit=monitor.get("units"))
-            except (TypeError, ValueError):
-                continue
-        parsed[station_id] = _StationInfo(
-            station_id=station_id,
-            active=bool(station.get("active", True)),
-            latitude=latitude,
-            longitude=longitude,
-            channels=channels,
-        )
+        return {}
+    parsed: dict[int, _StationInfo] = {}
+    for entry in raw:
+        station = _parse_station(entry)
+        if station is not None:
+            parsed[station.station_id] = station
     return parsed
 
 
@@ -232,6 +268,85 @@ def _nearest_station_ids(
         )
     )
     return [station.station_id for station in active[: max(0, count)]]
+
+
+def _entry_observed_at(entry: Any) -> datetime | None:
+    """One ``data`` entry's observation instant in UTC, or ``None`` when unusable."""
+    if not isinstance(entry, dict):
+        return None
+    raw_datetime = entry.get("datetime")
+    if not raw_datetime:
+        return None
+    try:
+        return _parse_ims_datetime(raw_datetime)
+    except ValueError:
+        return None
+
+
+def _channel_measurement(
+    raw_value: Any, provider_unit: str | None, name: str
+) -> tuple[str, Measurement] | None:
+    """``(variable id, measurement)`` for one channel, or ``None`` when unusable.
+
+    A channel with a row in :data:`_CHANNEL_MAP` lands on its vocabulary id
+    and unit. One without still comes through under a synthetic
+    ``x_<name>`` id (``docs/weather-api.md`` section 4: "No provider value
+    is dropped"), with its unit resolved through :data:`_UNIT_ALIASES` when
+    the provider's own unit string is recognizable.
+    """
+    if raw_value is None:
+        return None
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return None
+    mapping = _CHANNEL_MAP.get(name)
+    if mapping is not None:
+        variable_id, unit, original_unit = mapping
+        original_unit = original_unit or provider_unit
+    else:
+        variable_id = f"x_{name.lower()}"
+        original_unit = provider_unit
+        unit = _UNIT_ALIASES.get((provider_unit or "").lower(), "other")
+    return variable_id, Measurement(
+        value=value,
+        unit=unit,
+        original_value=raw_value,
+        original_unit=original_unit,
+    )
+
+
+def _station_count(params: dict[str, Any]) -> int:
+    """How many nearest stations to query when none are pinned (never < 0)."""
+    try:
+        return max(0, int(params.get("station_count", DEFAULT_NEAREST_STATIONS)))
+    except (TypeError, ValueError):
+        return DEFAULT_NEAREST_STATIONS
+
+
+def _explicit_station_ids(configured: Any, location_label: str) -> list[int] | None:
+    """The station ids ``location_label`` pinned, or ``None`` for discovery.
+
+    A mapping is per location: only this label's own entry is used, and a
+    label absent from it returns an *empty list* — pinned to nothing, so no
+    request — never ``None``, which would fall back to nearest-station
+    discovery. A plain list is the documented single-location convenience
+    and serves every location. ``None`` means nothing was configured at all.
+    See the module docstring.
+    """
+    if isinstance(configured, Mapping):
+        selected: Any = configured.get(location_label) or ()
+    elif configured:
+        selected = configured
+    else:
+        return None
+    station_ids: list[int] = []
+    for raw in selected:
+        try:
+            station_ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    return station_ids
 
 
 def _parse_ims_datetime(raw: str) -> datetime:
@@ -287,8 +402,19 @@ class ImsProvider(WeatherProvider):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
+        *,
+        env: Mapping[str, str] | None = None,
     ) -> list[RequestSpec]:
-        token = os.environ.get(self.auth.env_var or "")
+        """One ``latest`` request per station *this* location selected.
+
+        The token is read with
+        :meth:`~climate.weather.providers.base.WeatherProvider.credential`
+        from ``env`` — the same mapping ``availability()`` was resolved
+        against — so a key injected by the caller without touching
+        :data:`os.environ` builds a real request instead of silently
+        producing none.
+        """
+        token = self.credential(env)
         if not token:
             # Mirrors availability(): no requests are ever built without a
             # credential, regardless of whether the caller checked first.
@@ -296,11 +422,10 @@ class ImsProvider(WeatherProvider):
         headers = {"Authorization": f"ApiToken {token}"}
         params: dict[str, Any] = dict(getattr(settings, "params", None) or {})
 
-        explicit_ids = params.get("station_ids")
-        if explicit_ids:
+        explicit_ids = _explicit_station_ids(params.get("station_ids"), location.label)
+        if explicit_ids is not None:
             return [
-                self._latest_request(location, int(station_id), headers)
-                for station_id in explicit_ids
+                self._latest_request(location, station_id, headers) for station_id in explicit_ids
             ]
 
         stations = self._resolve_station_metadata(params)
@@ -315,9 +440,31 @@ class ImsProvider(WeatherProvider):
                 )
             ]
 
-        count = int(params.get("station_count", DEFAULT_NEAREST_STATIONS))
-        nearest = _nearest_station_ids(location, stations, count)
+        nearest = _nearest_station_ids(location, stations, _station_count(params))
         return [self._latest_request(location, station_id, headers) for station_id in nearest]
+
+    def requests_per_tick(
+        self,
+        location: LocationLike,
+        settings: ProviderSettingsLike | None = None,
+    ) -> int:
+        """How many stations one due tick queries for ``location``.
+
+        This adapter fans out — one ``latest`` request per selected station —
+        so the base class's "one request per location" would under-count
+        startup quota validation by a factor of the station count (four
+        locations at the default interval really cost ~1 152 calls/day, not
+        576). Reported here as the explicit ``station_ids`` count for this
+        location when pinned, else ``station_count``
+        (:data:`DEFAULT_NEAREST_STATIONS`). The one-off ``stations``
+        metadata request on the first tick is never more than this, so it
+        needs no separate allowance.
+        """
+        params: dict[str, Any] = dict(getattr(settings, "params", None) or {})
+        explicit_ids = _explicit_station_ids(params.get("station_ids"), location.label)
+        if explicit_ids is not None:
+            return len(explicit_ids)
+        return _station_count(params)
 
     def _resolve_station_metadata(self, params: dict[str, Any]) -> dict[int, _StationInfo]:
         """Fresh metadata, if any: an explicit override, else the instance cache."""
@@ -378,48 +525,10 @@ class ImsProvider(WeatherProvider):
 
         readings: list[Reading] = []
         for entry in payload.get("data") or []:
-            if not isinstance(entry, dict):
+            observed_at = _entry_observed_at(entry)
+            if observed_at is None:
                 continue
-            raw_datetime = entry.get("datetime")
-            if not raw_datetime:
-                continue
-            try:
-                observed_at = _parse_ims_datetime(raw_datetime)
-            except ValueError:
-                continue
-
-            values: dict[str, Measurement] = {}
-            for channel in entry.get("channels") or []:
-                if not isinstance(channel, dict) or not channel.get("valid"):
-                    continue
-                raw_value = channel.get("value")
-                if raw_value is None:
-                    continue
-                try:
-                    value = float(raw_value)
-                except (TypeError, ValueError):
-                    continue
-                name, provider_unit = self._channel_identity(station, channel)
-                if not name:
-                    continue
-                mapping = _CHANNEL_MAP.get(name)
-                if mapping is not None:
-                    variable_id, unit, original_unit = mapping
-                    original_unit = original_unit or provider_unit
-                else:
-                    # docs/weather-api.md section 4: "No provider value is
-                    # dropped" — a channel with no vocabulary row still
-                    # comes through, under a synthetic x_<name> id.
-                    variable_id = f"x_{name.lower()}"
-                    original_unit = provider_unit
-                    unit = _UNIT_ALIASES.get((provider_unit or "").lower(), "other")
-                values[variable_id] = Measurement(
-                    value=value,
-                    unit=unit,
-                    original_value=raw_value,
-                    original_unit=original_unit,
-                )
-
+            values = self._entry_values(station, entry)
             if not values:
                 continue
             readings.append(
@@ -429,12 +538,34 @@ class ImsProvider(WeatherProvider):
                     model=None,
                     location=str(location_label),
                     observed_at=observed_at,
+                    # These are station measurements, not a model run: the
+                    # feed states no issue/run time, and the fetch time is
+                    # never a substitute for one.
+                    model_run_at=None,
                     requested_at=requested_at,
                     kind="observation",
                     values=values,
                 )
             )
         return readings
+
+    def _entry_values(
+        self, station: _StationInfo | None, entry: dict[str, Any]
+    ) -> dict[str, Measurement]:
+        """Every valid channel of one ``data`` entry, as vocabulary values."""
+        values: dict[str, Measurement] = {}
+        for channel in entry.get("channels") or []:
+            if not isinstance(channel, dict) or not channel.get("valid"):
+                continue
+            name, provider_unit = self._channel_identity(station, channel)
+            if not name:
+                continue
+            measurement = _channel_measurement(channel.get("value"), provider_unit, name)
+            if measurement is None:
+                continue
+            variable_id, value = measurement
+            values[variable_id] = value
+        return values
 
     @staticmethod
     def _channel_identity(

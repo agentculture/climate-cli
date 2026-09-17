@@ -17,9 +17,9 @@ from pathlib import Path
 import pytest
 
 from climate.weather.providers.base import Capability, FreshnessStrategy, validate_provider
-from climate.weather.providers.ims import _CHANNEL_MAP, ImsProvider
+from climate.weather.providers.ims import _CHANNEL_MAP, DEFAULT_NEAREST_STATIONS, ImsProvider
 from climate.weather.store import FetchRecord
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
@@ -111,6 +111,30 @@ def test_build_requests_returns_nothing_without_a_token(monkeypatch: pytest.Monk
     assert provider.build_requests(location, _Settings()) == []
 
 
+def test_build_requests_reads_the_token_from_the_injected_env_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (qodo-17, ims half): the key that decides "enabled" builds it.
+
+    With nothing in ``os.environ`` and the token supplied only through the
+    caller's own mapping, the adapter must still build its request — it
+    reads the credential from ``env``, never from the process environment.
+    """
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
+    token = fake_secret("ims")
+    provider = ImsProvider()
+    location = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    env = {TOKEN_ENV: token}
+
+    assert provider.availability(_Settings(), env=env).enabled is True
+    requests = provider.build_requests(location, _Settings(), env=env)
+
+    assert len(requests) == 1
+    assert requests[0].headers["Authorization"] == f"ApiToken {token}"
+    # Nothing was read from the process environment.
+    assert provider.build_requests(location, _Settings()) == []
+
+
 # --- build_requests: station discovery and caching --------------------------
 
 
@@ -192,6 +216,111 @@ def test_build_requests_ignores_inactive_stations(monkeypatch: pytest.MonkeyPatc
     assert provider.build_requests(location, settings) == []
 
 
+# --- per-location station selection (qodo-8) ---------------------------------
+
+
+def test_a_station_ids_mapping_gives_each_location_only_its_own_stations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Station ids are per location, exactly as scheduling is."""
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    provider = ImsProvider()
+    home = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    away = _Location("away", *NEUTRAL_POINT)
+    settings = _Settings({"station_ids": {NEUTRAL_LABEL: [5], "away": [9, 11]}})
+
+    home_requests = provider.build_requests(home, settings)
+    away_requests = provider.build_requests(away, settings)
+
+    assert [spec.context["station_id"] for spec in home_requests] == [5]
+    assert [spec.context["station_id"] for spec in away_requests] == [9, 11]
+    assert all(spec.location_label == NEUTRAL_LABEL for spec in home_requests)
+    assert all(spec.location_label == "away" for spec in away_requests)
+
+
+def test_a_station_ids_mapping_without_this_location_emits_no_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pinned to nothing means nothing — not a fallback to nearest-station discovery."""
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    provider = ImsProvider()
+    home = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    settings = _Settings({"station_ids": {"away": [9]}})
+    assert provider.build_requests(home, settings) == []
+
+
+def test_a_plain_station_ids_list_still_serves_every_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The documented single-location convenience keeps working."""
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    provider = ImsProvider()
+    settings = _Settings({"station_ids": [5]})
+    for label in (NEUTRAL_LABEL, "away"):
+        location = _Location(label, *NEUTRAL_POINT)
+        (spec,) = provider.build_requests(location, settings)
+        assert spec.location_label == label
+        assert spec.context["station_id"] == 5
+
+
+# --- requests_per_tick (qodo-11) ---------------------------------------------
+
+
+def _two_station_body() -> bytes:
+    """The stations fixture with its one station duplicated under a second id.
+
+    The fixture carries a single station, which cannot exercise the default
+    two-nearest-stations fan-out. No coordinate is written here: the second
+    station is a copy of the fixture's own.
+    """
+    stations = json.loads(_stations_body())
+    second = dict(stations[0])
+    second["stationId"] = stations[0]["stationId"] + 1
+    return json.dumps([stations[0], second]).encode("utf-8")
+
+
+def test_requests_per_tick_matches_build_requests_for_pinned_station_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    provider = ImsProvider()
+    location = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    settings = _Settings({"station_ids": [5, 9, 11]})
+
+    assert provider.requests_per_tick(location, settings) == len(
+        provider.build_requests(location, settings)
+    )
+    assert provider.requests_per_tick(location, settings) == 3
+
+
+def test_requests_per_tick_matches_build_requests_for_the_default_station_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression (qodo-11): the declared per-tick cost is the station fan-out.
+
+    The base contract's ``1`` under-counted quota demand by the number of
+    stations, so four locations at the default interval passed the
+    1 000-call check while really costing about 1 152 calls/day.
+    """
+    monkeypatch.setenv(TOKEN_ENV, TOKEN)
+    provider = ImsProvider()
+    location = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    # Prime the cache the way normalize() does from a real stations fetch.
+    assert provider.normalize(_fetch(_two_station_body())) == []
+
+    settings = _Settings()
+    assert provider.requests_per_tick(location, settings) == DEFAULT_NEAREST_STATIONS
+    assert provider.requests_per_tick(location, settings) == len(
+        provider.build_requests(location, settings)
+    )
+
+
+def test_requests_per_tick_follows_an_explicit_station_count() -> None:
+    provider = ImsProvider()
+    location = _Location(NEUTRAL_LABEL, *NEUTRAL_POINT)
+    assert provider.requests_per_tick(location, _Settings({"station_count": 4})) == 4
+
+
 # --- normalize: stations metadata response ----------------------------------
 
 
@@ -249,6 +378,17 @@ def test_normalize_latest_resolves_channels_via_cached_station_metadata_too() ->
 
     assert reading.values["shortwave_radiation"].value == 610.0
     assert reading.values["direct_normal_radiation"].value == 720.0
+
+
+def test_model_run_at_is_none_for_a_station_observation() -> None:
+    """qodo-14: Envista observations are measurements, not a model run.
+
+    The feed states no issue/run time, and the fetch time is never a
+    substitute for one.
+    """
+    provider = ImsProvider()
+    (reading,) = provider.normalize(_fetch(_latest_body()))
+    assert reading.model_run_at is None
 
 
 def test_normalize_latest_observed_at_never_comes_from_requested_at() -> None:

@@ -9,6 +9,7 @@ from the XML prolog itself.
 from __future__ import annotations
 
 import logging
+import time
 import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ import pytest
 
 from climate.weather.providers import base
 from climate.weather.providers.base import Availability, ProviderSettings
-from climate.weather.providers.ims_forecast import ImsForecastProvider
+from climate.weather.providers.ims_forecast import ImsForecastProvider, _normalize_city_name
 from climate.weather.store import FetchError, FetchRecord
 from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
 
@@ -46,11 +47,16 @@ def test_fixture_bytes_are_iso_8859_8_and_untouched() -> None:
     assert b'encoding="ISO-8859-8"' in FIXTURE_BODY[:100]
 
 
-def _fetch_record(url: str, body: bytes = FIXTURE_BODY, status: int | None = 200) -> FetchRecord:
+def _fetch_record(
+    url: str,
+    body: bytes = FIXTURE_BODY,
+    status: int | None = 200,
+    location: str = NEUTRAL_LABEL,
+) -> FetchRecord:
     return FetchRecord(
         provider="ims-forecast",
         endpoint=url,
-        location=NEUTRAL_LABEL,
+        location=location,
         requested_at=NOW,
         status=status,
         body=body,
@@ -97,8 +103,8 @@ def test_ims_forecast_is_enabled_only_with_explicit_enabled_true() -> None:
 
 def test_no_cities_configured_emits_no_requests() -> None:
     provider = ImsForecastProvider()
-    assert provider.build_requests(LOCATION, ProviderSettings(enabled=True)) == ()
-    assert provider.build_requests(LOCATION, ProviderSettings(enabled=True, params={})) == ()
+    assert list(provider.build_requests(LOCATION, ProviderSettings(enabled=True))) == []
+    assert list(provider.build_requests(LOCATION, ProviderSettings(enabled=True, params={}))) == []
 
 
 def test_configured_cities_build_one_request_carrying_the_candidates_in_the_fragment() -> None:
@@ -125,6 +131,59 @@ def test_the_candidates_are_never_sent_on_the_wire() -> None:
     assert "Herzliya" not in request.selector
     assert "Tel Aviv" not in request.selector
     assert "Yafo" not in request.selector
+
+
+def test_a_cities_mapping_gives_each_location_only_its_own_candidates() -> None:
+    """Regression (qodo-8, ims-forecast half): candidates are per location.
+
+    With a mapping, each configured location's request carries only the
+    candidates listed under its own label, and normalizing the *same* feed
+    bytes therefore stores each location's own city — never the other's.
+    """
+    provider = ImsForecastProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(
+        enabled=True,
+        params={"cities": {NEUTRAL_LABEL: ["Elat"], other.label: ["Tel Aviv - Yafo"]}},
+    )
+
+    (home_spec,) = provider.build_requests(LOCATION, settings)
+    (away_spec,) = provider.build_requests(other, settings)
+
+    assert home_spec.context["cities"] == ("Elat",)
+    assert away_spec.context["cities"] == ("Tel Aviv - Yafo",)
+
+    home_readings = provider.normalize(_fetch_record(home_spec.url))
+    away_readings = provider.normalize(_fetch_record(away_spec.url, location=other.label))
+    assert home_readings and away_readings
+    assert {r.source for r in home_readings} == {"ims-forecast/Elat"}
+    assert {r.source for r in away_readings} == {"ims-forecast/Tel Aviv - Yafo"}
+
+
+def test_a_cities_mapping_without_this_location_emits_no_request() -> None:
+    provider = ImsForecastProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(enabled=True, params={"cities": {other.label: ["Elat"]}})
+    assert list(provider.build_requests(LOCATION, settings)) == []
+
+
+def test_a_plain_cities_list_still_serves_every_location() -> None:
+    """The documented single-location convenience keeps working."""
+    provider = ImsForecastProvider()
+    other = _Location("away", *NEUTRAL_POINT)
+    settings = ProviderSettings(enabled=True, params={"cities": ["Elat"]})
+    for location in (LOCATION, other):
+        (spec,) = provider.build_requests(location, settings)
+        assert spec.location_label == location.label
+        assert spec.context["cities"] == ("Elat",)
+
+
+def test_build_requests_accepts_the_env_keyword_although_it_needs_no_credential() -> None:
+    provider = ImsForecastProvider()
+    settings = ProviderSettings(enabled=True, params={"cities": ["Elat"]})
+    assert provider.build_requests(LOCATION, settings, env={}) == provider.build_requests(
+        LOCATION, settings
+    )
 
 
 # --- normalize: city matching --------------------------------------------------
@@ -263,6 +322,59 @@ def test_normalize_drops_no_provider_value_from_the_fixture() -> None:
     wind = reading.values["x_wind_direction_and_speed"]
     assert wind.unit == "code"
     assert wind.value == "270-45/15-25"
+
+
+# --- model_run_at (qodo-14) ----------------------------------------------------
+
+
+def test_model_run_at_is_the_feeds_own_issue_time_not_the_fetch_time() -> None:
+    """The feed states ``Identification/IssueDateTime``; that is the run time."""
+    provider = ImsForecastProvider()
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
+    readings = provider.normalize(_fetch_record(url))
+    assert readings
+    issued = datetime(2026, 9, 17, 17, 40, tzinfo=UTC)
+    assert {r.model_run_at for r in readings} == {issued}
+    assert all(r.model_run_at != r.requested_at for r in readings)
+
+
+def test_model_run_at_is_none_when_the_feed_states_no_issue_time() -> None:
+    provider = ImsForecastProvider()
+    url = "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml#cities=Elat"
+    stripped = FIXTURE_BODY.replace(b"<IssueDateTime>2026-09-17 17:40</IssueDateTime>", b"")
+    assert stripped != FIXTURE_BODY
+    readings = provider.normalize(_fetch_record(url, body=stripped))
+    assert readings
+    assert all(r.model_run_at is None for r in readings)
+
+
+# --- city-name normalization ----------------------------------------------------
+
+
+def test_city_name_normalization_stays_linear_on_an_adversarial_name() -> None:
+    """Sonar S8786: the old ``\\s*-\\s*`` pattern backtracked super-linearly.
+
+    A long *interior* run of whitespace with no dash after it is the worst
+    case (leading/trailing runs are cut by ``strip()`` first). The rewritten
+    matcher scans each character once, so a name with 150 000 interior
+    spaces resolves immediately; the old pattern took over ten seconds on
+    the same input, and grew quadratically from there.
+    """
+    provider = ImsForecastProvider()
+    adversarial = "a" + " " * 150_000 + "b"
+    url = (
+        "https://ims.gov.il/sites/default/files/ims_data/xml_files/isr_cities.xml"
+        "#cities=a" + "+" * 150_000 + "b"
+    )
+    started = time.monotonic()
+    assert provider.normalize(_fetch_record(url)) == ()
+    assert _normalize_city_name(adversarial) == "a b"
+    assert time.monotonic() - started < 2.0
+
+
+def test_city_name_normalization_keeps_its_matching_behaviour() -> None:
+    assert _normalize_city_name("Tel Aviv - Yafo") == _normalize_city_name("tel aviv-yafo")
+    assert _normalize_city_name("  Some   Town  ") == "some town"
 
 
 def test_normalize_returns_nothing_for_a_failed_fetch() -> None:

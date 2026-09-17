@@ -27,10 +27,11 @@ from climate.weather.providers.base import (
 )
 from climate.weather.providers.openweather import ENV_VAR, OpenWeatherProvider
 from climate.weather.store import FetchRecord, SecretLeakError, redact_url
-from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT
+from tests.weather.neutral import NEUTRAL_LABEL, NEUTRAL_POINT, fake_secret
 
 FIXTURE_PATH = "tests/fixtures/openweather_current.json"
-FAKE_KEY = "fake-openweather-key-do-not-use"
+#: Never a key-shaped literal in a test - built at call time.
+FAKE_KEY = fake_secret("openweather")
 
 
 class _Location:
@@ -51,12 +52,12 @@ def _fixture_bytes() -> bytes:
         return fh.read()
 
 
-@pytest.fixture()
+@pytest.fixture
 def provider() -> OpenWeatherProvider:
     return OpenWeatherProvider()
 
 
-@pytest.fixture()
+@pytest.fixture
 def with_api_key(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv(ENV_VAR, FAKE_KEY)
     return FAKE_KEY
@@ -138,7 +139,31 @@ def test_build_requests_returns_nothing_without_a_key(
     provider: OpenWeatherProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(ENV_VAR, raising=False)
-    assert provider.build_requests(LOCATION, ProviderSettings()) == ()
+    assert list(provider.build_requests(LOCATION, ProviderSettings())) == []
+
+
+def test_build_requests_reads_the_key_from_the_injected_env_only(
+    provider: OpenWeatherProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression (qodo-17): the key that decides "enabled" builds the request.
+
+    With nothing in ``os.environ`` and the key supplied only through the
+    caller's own mapping, the adapter previously declared itself enabled and
+    then produced no request at all (a silent no-request outcome every
+    tick). It must now build the real request from that same mapping.
+    """
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    api_key = fake_secret("openweather-injected")
+    env = {ENV_VAR: api_key}
+
+    assert provider.availability(ProviderSettings(), env=env).enabled is True
+    requests = provider.build_requests(LOCATION, ProviderSettings(), env=env)
+
+    assert len(requests) == 1
+    query = dict(parse_qsl(urlsplit(requests[0].url).query))
+    assert query["appid"] == api_key
+    # Nothing was read from the process environment.
+    assert list(provider.build_requests(LOCATION, ProviderSettings())) == []
 
 
 # --- secret redaction ---------------------------------------------------------
@@ -158,6 +183,7 @@ def test_a_fetch_record_refuses_an_unredacted_endpoint(
     provider: OpenWeatherProvider, with_api_key: str
 ) -> None:
     spec = provider.build_requests(LOCATION, ProviderSettings())[0]
+    body = _fixture_bytes()
     with pytest.raises(SecretLeakError):
         FetchRecord(
             provider=provider.id,
@@ -165,7 +191,7 @@ def test_a_fetch_record_refuses_an_unredacted_endpoint(
             location=NEUTRAL_LABEL,
             requested_at=NOW,
             status=200,
-            body=_fixture_bytes(),
+            body=body,
         )
     # The redacted endpoint is what actually gets stored.
     record = FetchRecord(
@@ -315,6 +341,19 @@ def test_normalize_never_uses_requested_at_as_observed_at(
     assert readings[0].observed_at != readings[0].requested_at
 
 
+def test_model_run_at_is_none_because_the_payload_states_none(
+    provider: OpenWeatherProvider,
+) -> None:
+    """qodo-14: OpenWeather states no model issue/run time, so none is claimed.
+
+    In particular the fetch time is never substituted for one — that is the
+    false provenance this finding is about.
+    """
+    reading = provider.normalize(_fixture_record())[0]
+    assert reading.model_run_at is None
+    assert reading.requested_at == NOW
+
+
 def test_normalize_is_pure_and_re_derivable(provider: OpenWeatherProvider) -> None:
     record = _fixture_record()
     first = provider.normalize(record)
@@ -333,7 +372,7 @@ def test_normalize_returns_nothing_for_a_failed_fetch(provider: OpenWeatherProvi
         status=401,
         body=b'{"cod":401,"message":"Invalid API key"}',
     )
-    assert provider.normalize(record) == ()
+    assert list(provider.normalize(record)) == []
 
 
 def test_normalize_returns_nothing_for_a_304(provider: OpenWeatherProvider) -> None:
@@ -345,4 +384,4 @@ def test_normalize_returns_nothing_for_a_304(provider: OpenWeatherProvider) -> N
         status=304,
         body=b"",
     )
-    assert provider.normalize(record) == ()
+    assert list(provider.normalize(record)) == []
