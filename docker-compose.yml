@@ -16,11 +16,17 @@
 #     keep in sync.)
 #   - Every service ships json-file logging with rotation (max-size,
 #     max-file) so an unattended long-running stack doesn't fill the disk.
-#   - Secrets and the host config path are supplied via docker/weather.env
-#     (gitignored — NOT the pattern already ignored by this repo's
-#     `.env`/`.envrc` rules, so `.gitignore` gets one line added for it).
-#     See docker/weather.env.example for every variable, documented with
-#     placeholder values only.
+#   - Secrets and the host config directory are supplied via
+#     docker/weather.env (gitignored — NOT the pattern already ignored by
+#     this repo's `.env`/`.envrc` rules, so `.gitignore` gets one line
+#     added for it). See docker/weather.env.example for every variable,
+#     documented with placeholder values only.
+#   - The user's location config is private data and lives OUTSIDE the
+#     repo. It defaults to ${HOME}/.config/climate-cli — matching the
+#     config task's own default of $XDG_CONFIG_HOME/climate-cli
+#     (~/.config/climate-cli) — and is bind-mounted read-only into both
+#     tracker and web at /app/config. CLIMATE_WEATHER_CONFIG_PATH tells
+#     each service where inside that mount to read weather.json from.
 #
 # Bring the stack up (once the `weather` extra + tracker/web modules exist —
 # out of scope for this task):
@@ -72,8 +78,10 @@ services:
     restart: unless-stopped
     env_file:
       - docker/weather.env
+    environment:
+      CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
     volumes:
-      - ${CLIMATE_WEATHER_CONFIG_DIR:-./config}:/app/config:ro
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
     depends_on:
       weather-mongodb:
         condition: service_healthy
@@ -93,8 +101,10 @@ services:
     restart: unless-stopped
     env_file:
       - docker/weather.env
+    environment:
+      CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
     volumes:
-      - ${CLIMATE_WEATHER_CONFIG_DIR:-./config}:/app/config:ro
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-${HOME}/.config/climate-cli}:/app/config:ro
     ports:
       - "${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8790}:8790"
     depends_on:

@@ -214,6 +214,40 @@ def test_config_path_is_mounted_read_only_via_variable(compose):
         assert ":ro" in flattened or "read_only" in flattened.lower()
 
 
+def test_config_mount_default_is_outside_the_repo(compose):
+    """The user's location config is private data and must not default to
+    an in-repo/relative path (e.g. ./config) — it must default outside the
+    repo, matching the config task's own default of
+    $XDG_CONFIG_HOME/climate-cli (~/.config/climate-cli).
+    """
+    services = compose["services"]
+    for name in ("weather-tracker", "weather-web"):
+        svc = services[name]
+        volumes = svc.get("volumes") or []
+        flattened = " ".join(str(v) for v in volumes)
+
+        # The default (fallback after `:-`) must not be a relative path.
+        assert "CLIMATE_WEATHER_CONFIG_DIR:-./" not in flattened
+        assert "CLIMATE_WEATHER_CONFIG_DIR:-config" not in flattened
+
+        # It must resolve to somewhere under the user's home / XDG config,
+        # not a bare relative-looking default.
+        assert (
+            "${HOME}/.config/climate-cli" in flattened or "$HOME/.config/climate-cli" in flattened
+        ), f"{name}: config mount default must live outside the repo, got: {flattened!r}"
+
+
+def test_services_set_config_path_env_var(compose):
+    services = compose["services"]
+    for name in ("weather-tracker", "weather-web"):
+        svc = services[name]
+        env = svc.get("environment") or {}
+        assert (
+            "CLIMATE_WEATHER_CONFIG_PATH" in env
+        ), f"{name} must set CLIMATE_WEATHER_CONFIG_PATH so it reads the mounted config file"
+        assert env["CLIMATE_WEATHER_CONFIG_PATH"] == "/app/config/weather.json"
+
+
 def test_gitignore_covers_the_weather_env_file():
     gitignore_text = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "docker/weather.env" in gitignore_text
