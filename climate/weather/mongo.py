@@ -460,9 +460,18 @@ class MongoWeatherStore:
         document["fetch_id"] = fetch_id
         document["observed_at"] = _truncate_to_millis(document["observed_at"])
         document["requested_at"] = _truncate_to_millis(document["requested_at"])
+        if document.get("model_run_at") is not None:
+            document["model_run_at"] = _truncate_to_millis(document["model_run_at"])
         return document
 
-    def save_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
+    def _prepare_reading_documents(
+        self, fetch_id: str, readings: Sequence[Reading]
+    ) -> list[dict[str, Any]]:
+        """Validate *readings* against *fetch_id* and build their documents.
+
+        Every check that can refuse the write happens here, before anything
+        is written or deleted.
+        """
         if self._fetches.find_one({"_id": fetch_id}) is None:
             raise UnknownFetchError(
                 f"no fetch record {fetch_id!r}: save the raw response before its readings"
@@ -472,16 +481,41 @@ class MongoWeatherStore:
                 raise ValueError(
                     f"reading is bound to fetch {reading.fetch_id!r}, not {fetch_id!r}"
                 )
-        documents = [self._reading_document(fetch_id, reading) for reading in readings]
-        for document in documents:
-            self._readings.insert_one(document)
-        return [document["_id"] for document in documents]
+        return [self._reading_document(fetch_id, reading) for reading in readings]
+
+    def _insert_readings(self, documents: Sequence[dict[str, Any]]) -> list[str]:
+        """Insert *documents*, removing any already inserted if one fails.
+
+        A partial insert would otherwise leave a half-written replacement
+        set behind next to the old one.
+        """
+        inserted: list[str] = []
+        try:
+            for document in documents:
+                self._readings.insert_one(document)
+                inserted.append(document["_id"])
+        except Exception:
+            if inserted:
+                self._readings.delete_many({"_id": {"$in": inserted}})
+            raise
+        return inserted
+
+    def save_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
+        return self._insert_readings(self._prepare_reading_documents(fetch_id, readings))
 
     def replace_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
-        if self._fetches.find_one({"_id": fetch_id}) is None:
-            raise UnknownFetchError(f"no fetch record {fetch_id!r}")
-        self._readings.delete_many({"fetch_id": fetch_id})
-        return self.save_readings(fetch_id, readings)
+        # All-or-nothing without relying on a transaction (this store runs
+        # against a standalone mongod, where transactions are unavailable):
+        # validate the whole replacement set, capture the ids of the
+        # readings being replaced, insert the replacements, and only then
+        # delete the captured ids. A refused validation or a failed insert
+        # therefore leaves the previous set intact and re-derivable.
+        documents = self._prepare_reading_documents(fetch_id, readings)
+        stale_ids = [document["_id"] for document in self._readings.find({"fetch_id": fetch_id})]
+        new_ids = self._insert_readings(documents)
+        if stale_ids:
+            self._readings.delete_many({"_id": {"$in": stale_ids}})
+        return new_ids
 
     def readings_for_fetch(self, fetch_id: str) -> list[Reading]:
         documents = self._readings.find({"fetch_id": fetch_id})
@@ -533,6 +567,7 @@ class MongoWeatherStore:
                     model=reading.model,
                     kind=reading.kind,
                     fetch_id=reading.fetch_id,
+                    model_run_at=reading.model_run_at,
                 )
             )
         return points

@@ -85,6 +85,7 @@ def make_reading(
     location: str = "reference-point",
     observed_at: datetime = T0,
     requested_at: datetime = T0,
+    model_run_at: datetime | None = None,
     kind: str = "observation",
     values: dict[str, Measurement] | None = None,
     fetch_id: str = "",
@@ -98,6 +99,7 @@ def make_reading(
         location=location,
         observed_at=observed_at,
         requested_at=requested_at,
+        model_run_at=model_run_at,
         kind=kind,
         values=values
         or {
@@ -113,7 +115,7 @@ class StoreContractTests:
     def make_store(self) -> WeatherStore:  # pragma: no cover - overridden
         raise NotImplementedError("subclasses must return a fresh, empty store")
 
-    @pytest.fixture()
+    @pytest.fixture
     def store(self) -> WeatherStore:
         return self.make_store()
 
@@ -231,8 +233,9 @@ class StoreContractTests:
     # --- normalized readings ----------------------------------------------
 
     def test_readings_require_an_existing_fetch(self, store: WeatherStore) -> None:
+        reading = make_reading()
         with pytest.raises(UnknownFetchError):
-            store.save_readings("no-such-fetch", [make_reading()])
+            store.save_readings("no-such-fetch", [reading])
         assert store.count_readings() == 0
 
     def test_saved_readings_are_bound_to_their_fetch(self, store: WeatherStore) -> None:
@@ -248,8 +251,9 @@ class StoreContractTests:
     def test_saving_a_reading_bound_to_another_fetch_is_refused(self, store: WeatherStore) -> None:
         first = store.save_fetch(make_fetch())
         second = store.save_fetch(make_fetch(requested_at=T0 + timedelta(minutes=5)))
+        foreign = make_reading(fetch_id=first)
         with pytest.raises(ValueError):
-            store.save_readings(second, [make_reading(fetch_id=first)])
+            store.save_readings(second, [foreign])
         assert store.readings_for_fetch(second) == []
 
     def test_provenance_round_trips(self, store: WeatherStore) -> None:
@@ -293,6 +297,57 @@ class StoreContractTests:
     def test_replace_readings_requires_an_existing_fetch(self, store: WeatherStore) -> None:
         with pytest.raises(UnknownFetchError):
             store.replace_readings("nope", [])
+
+    def test_replace_readings_keeps_the_old_set_when_a_replacement_is_refused(
+        self, store: WeatherStore
+    ) -> None:
+        """A rejected replacement must not have already deleted the old readings.
+
+        Re-derivation is the only way back from the raw bytes, so a
+        replacement that cannot be validated must leave the previous
+        normalized set exactly as it was rather than destroying it on the
+        way to discovering the problem.
+        """
+        other = store.save_fetch(make_fetch(provider="ims"))
+        fetch_id = store.save_fetch(make_fetch(requested_at=T0 + timedelta(minutes=5)))
+        (kept_id,) = store.save_readings(
+            fetch_id, [make_reading(values={"temperature": Measurement(27.4, "degC")})]
+        )
+        # The second replacement is bound to a *different* fetch, so the
+        # whole batch must be refused - after the first one has already
+        # been accepted, which is what catches a delete-then-validate
+        # implementation.
+        replacements = [
+            make_reading(values={"temperature": Measurement(27.5, "degC")}),
+            make_reading(fetch_id=other, values={"temperature": Measurement(27.6, "degC")}),
+        ]
+        with pytest.raises(ValueError):
+            store.replace_readings(fetch_id, replacements)
+
+        survivors = store.readings_for_fetch(fetch_id)
+        assert [reading.id for reading in survivors] == [kept_id]
+        assert survivors[0].values["temperature"].value == 27.4
+        assert store.count_readings() == 1
+
+    # --- provider model issue / run time -----------------------------------
+
+    def test_model_run_at_round_trips(self, store: WeatherStore) -> None:
+        run_at = T0 - timedelta(hours=3)
+        fetch_id = store.save_fetch(make_fetch())
+        store.save_readings(fetch_id, [make_reading(kind="forecast", model_run_at=run_at)])
+        (stored,) = store.readings_for_fetch(fetch_id)
+        assert stored.model_run_at == run_at
+        assert stored.model_run_at != stored.requested_at
+        (point,) = store.series("temperature")
+        assert point.model_run_at == run_at
+
+    def test_model_run_at_is_none_when_the_provider_states_none(self, store: WeatherStore) -> None:
+        fetch_id = store.save_fetch(make_fetch())
+        store.save_readings(fetch_id, [make_reading()])
+        (stored,) = store.readings_for_fetch(fetch_id)
+        assert stored.model_run_at is None
+        (point,) = store.series("temperature")
+        assert point.model_run_at is None
 
     def test_latest_reading_filters_by_provider_location_and_kind(
         self, store: WeatherStore

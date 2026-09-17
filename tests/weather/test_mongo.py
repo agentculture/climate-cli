@@ -25,6 +25,7 @@ from climate.weather.mongo import (
     renew_lease,
     resolve_uri,
 )
+from climate.weather.store import Measurement
 from tests.weather.store_contract import StoreContractTests, make_fetch, make_reading
 
 # --- a hand-written fake of the pymongo collection API -----------------------
@@ -85,6 +86,9 @@ def _matches(document: dict[str, Any], query: dict[str, Any]) -> bool:
                         return False
                 elif op == "$ne":
                     if _get_path(document, key) == operand:
+                        return False
+                elif op == "$in":
+                    if _get_path(document, key) not in operand:
                         return False
                 elif op == "$gte":
                     value = _get_path(document, key)
@@ -232,7 +236,7 @@ def test_connect_without_pymongo_raises_cli_error_exit_2(monkeypatch: pytest.Mon
         connect()
     err = excinfo.value
     assert err.code == EXIT_ENV_ERROR
-    assert 'pip install "climate-cli[weather]"' == err.remediation
+    assert err.remediation == 'pip install "climate-cli[weather]"'
     assert "Traceback" not in str(err)
 
 
@@ -357,6 +361,72 @@ def test_reading_times_truncated_to_milliseconds_on_save() -> None:
     (reading,) = store.readings_for_fetch(fetch_id)
     assert reading.observed_at.microsecond == 987000
     assert reading.requested_at.microsecond == 987000
+
+
+def test_model_run_at_truncated_to_milliseconds_on_save() -> None:
+    store = MongoWeatherStore(FakeCollection(), FakeCollection())
+    fetch_id = store.save_fetch(make_fetch())
+    sub_ms = datetime(2026, 9, 17, 6, 0, 0, 654321, tzinfo=UTC)
+    store.save_readings(fetch_id, [make_reading(kind="forecast", model_run_at=sub_ms)])
+    (reading,) = store.readings_for_fetch(fetch_id)
+    assert reading.model_run_at is not None
+    assert reading.model_run_at.microsecond == 654000
+
+
+def test_a_reading_document_without_model_run_at_still_loads() -> None:
+    """Documents written before the field existed must keep loading."""
+    readings = FakeCollection()
+    store = MongoWeatherStore(FakeCollection(), readings)
+    fetch_id = store.save_fetch(make_fetch())
+    store.save_readings(fetch_id, [make_reading()])
+    for document in readings.documents.values():
+        del document["model_run_at"]
+    (reading,) = store.readings_for_fetch(fetch_id)
+    assert reading.model_run_at is None
+
+
+class _FlakyInsertCollection(FakeCollection):
+    """A collection whose ``insert_one`` starts failing at a chosen call.
+
+    Stands in for a Mongo write failure part-way through persisting a
+    replacement set.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inserts = 0
+        self.fail_from_insert: int | None = None
+
+    def insert_one(self, document: dict[str, Any]) -> Any:
+        self.inserts += 1
+        if self.fail_from_insert is not None and self.inserts >= self.fail_from_insert:
+            raise RuntimeError("mongo write failed")
+        return super().insert_one(document)
+
+
+def test_a_failed_insert_during_replace_leaves_the_previous_readings_intact() -> None:
+    """The swap inserts before deleting, so a write failure loses nothing.
+
+    The replacement's first document is written and its second fails; the
+    previously stored readings must still be there afterwards, and the
+    half-written replacement must not be.
+    """
+    readings = _FlakyInsertCollection()
+    store = MongoWeatherStore(FakeCollection(), readings)
+    fetch_id = store.save_fetch(make_fetch())
+    (kept_id,) = store.save_readings(fetch_id, [make_reading()])
+
+    replacements = [
+        make_reading(values={"temperature": Measurement(27.5, "degC")}),
+        make_reading(values={"temperature": Measurement(27.6, "degC")}),
+    ]
+    readings.fail_from_insert = readings.inserts + 2  # second replacement insert
+    with pytest.raises(RuntimeError):
+        store.replace_readings(fetch_id, replacements)
+
+    survivors = store.readings_for_fetch(fetch_id)
+    assert [reading.id for reading in survivors] == [kept_id]
+    assert survivors[0].values["temperature"].value == 27.4
 
 
 # --- tracker lease -------------------------------------------------------------

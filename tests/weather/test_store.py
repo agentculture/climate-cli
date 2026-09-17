@@ -101,8 +101,9 @@ def test_fetch_record_accepts_a_matching_digest_for_round_trips() -> None:
 
 
 def test_fetch_record_rejects_naive_times() -> None:
+    naive = datetime(2026, 9, 17, 9, 0)
     with pytest.raises(ValueError, match="UTC"):
-        make_fetch(requested_at=datetime(2026, 9, 17, 9, 0))
+        make_fetch(requested_at=naive)
 
 
 def test_fetch_record_normalizes_offsets_to_utc() -> None:
@@ -213,10 +214,26 @@ def test_reading_rejects_an_unknown_kind() -> None:
 
 
 def test_reading_rejects_naive_times() -> None:
+    naive = datetime(2026, 9, 17, 9, 0)
     with pytest.raises(ValueError, match="UTC"):
-        make_reading(observed_at=datetime(2026, 9, 17, 9, 0))
+        make_reading(observed_at=naive)
     with pytest.raises(ValueError, match="UTC"):
-        make_reading(requested_at=datetime(2026, 9, 17, 9, 0))
+        make_reading(requested_at=naive)
+
+
+def test_reading_rejects_a_naive_model_run_at() -> None:
+    naive = datetime(2026, 9, 17, 9, 0)
+    with pytest.raises(ValueError, match="model_run_at"):
+        make_reading(model_run_at=naive)
+
+
+def test_reading_normalizes_model_run_at_to_utc() -> None:
+    run_at = datetime(2026, 9, 17, 11, 0, tzinfo=timezone(timedelta(hours=2)))
+    assert make_reading(model_run_at=run_at).model_run_at == T0
+
+
+def test_reading_model_run_at_defaults_to_none() -> None:
+    assert make_reading().model_run_at is None
 
 
 def test_reading_requires_values() -> None:
@@ -299,6 +316,21 @@ def test_reading_document_round_trip() -> None:
     assert restored.values["temperature"].original_unit == "degF"
 
 
+def test_reading_document_round_trips_model_run_at() -> None:
+    run_at = T0 - timedelta(hours=6)
+    reading = make_reading(kind="forecast", model_run_at=run_at)
+    document = reading.to_document()
+    assert document["model_run_at"] == run_at
+    assert Reading.from_document(document).model_run_at == run_at
+
+
+def test_reading_from_a_document_without_model_run_at_reads_as_none() -> None:
+    """Documents stored before the field existed (schema_version 1) still load."""
+    document = make_reading().to_document()
+    del document["model_run_at"]
+    assert Reading.from_document(document).model_run_at is None
+
+
 def test_reading_document_carries_the_id_when_present() -> None:
     store = InMemoryWeatherStore()
     fetch_id = store.save_fetch(make_fetch())
@@ -345,4 +377,13 @@ def test_series_point_is_a_plain_value() -> None:
         kind="observation",
         fetch_id="f1",
     )
+    # model_run_at is a trailing field with a default: the pre-existing
+    # positional construction below must keep working unchanged.
     assert point == SeriesPoint(T0, 27.4, "degC", "ims", "station:1", None, "observation", "f1")
+    assert point.model_run_at is None
+
+
+def test_series_point_can_carry_the_provider_model_run_time() -> None:
+    run_at = T0 - timedelta(hours=3)
+    point = SeriesPoint(T0, 27.4, "degC", "ims", "station:1", None, "forecast", "f1", run_at)
+    assert point.model_run_at == run_at

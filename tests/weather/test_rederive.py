@@ -227,6 +227,57 @@ def test_a_failing_normalize_is_isolated_counted_and_leaves_old_readings() -> No
     assert kept[0].values["temperature"].value == 9.0
 
 
+def test_a_storage_failure_on_one_record_is_a_per_record_failure() -> None:
+    """A store raising for one record must not abort the rest of the pass.
+
+    The record is counted and reported as a failure, its previously stored
+    readings are left alone, and every other record is still re-derived.
+    """
+
+    class _FlakyStore(InMemoryWeatherStore):
+        """Refuses to replace the readings of one chosen fetch record."""
+
+        def __init__(self, fails_on: str = "") -> None:
+            super().__init__()
+            self.fails_on = fails_on
+
+        def replace_readings(self, fetch_id: str, readings: Sequence[Reading]) -> list[str]:
+            if fetch_id == self.fails_on:
+                raise RuntimeError(f"storage refused {fetch_id}")
+            return super().replace_readings(fetch_id, readings)
+
+    store = _FlakyStore()
+    bad_id = _save_fetch(store, "fake", requested_at=REQUESTED_AT)
+    good_id = _save_fetch(store, "fake", requested_at=REQUESTED_AT.replace(minute=10))
+    old_reading = Reading(
+        provider="fake",
+        source="fake",
+        location=NEUTRAL_LABEL,
+        observed_at=REQUESTED_AT,
+        requested_at=REQUESTED_AT,
+        kind="observation",
+        values={"temperature": Measurement(value=9.0, unit="degC")},
+    )
+    store.save_readings(bad_id, [old_reading])
+    store.fails_on = bad_id
+
+    result = rederive(store, [_FakeProvider("fake")])
+
+    assert result.fetches_seen == 2
+    assert result.rederived == 1
+    assert result.failed == 1
+    assert result.skipped == 0
+    assert result.readings_written == 1
+    (failure,) = result.failures
+    assert failure.fetch_id == bad_id
+    assert "storage refused" in failure.error
+    # The other record was still re-derived...
+    assert len(store.readings_for_fetch(good_id)) == 1
+    # ...and the failing record's readings are untouched.
+    kept = store.readings_for_fetch(bad_id)
+    assert [reading.values["temperature"].value for reading in kept] == [9.0]
+
+
 def test_a_record_that_normalizes_to_zero_readings_still_counts_as_rederived() -> None:
     store = InMemoryWeatherStore()
     fetch_id = _save_fetch(store, "fake")
