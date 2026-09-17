@@ -31,12 +31,12 @@ unmodified bytes of one real response.
   question resolution. Response is the raw JSON body, byte-for-byte.
 
 - **`met_no_locationforecast.json`** + **`met_no_locationforecast_headers.txt`**
-  — MET Norway Locationforecast 2.0 compact, keyless but requires an
+  — MET Norway Locationforecast 2.0 complete, keyless but requires an
   identifying `User-Agent`.
 
   ```bash
   curl -H "User-Agent: climate-cli/0.4 github.com/agentculture/climate-cli" \
-    "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=51.4769&lon=-0.0005" \
+    "https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=51.4769&lon=-0.0005" \
     -D met_no_locationforecast_headers.txt
   ```
 
