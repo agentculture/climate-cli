@@ -98,8 +98,11 @@ it picked for you.
 | `backup dump` / `list` / `restore` / `overview` | Local database backups. |
 
 Markdown is the default rendering — it is what humans and agents both read.
-Every command supports `--json` for code; `weather --json` returns the HTTP
-API's payload structure unchanged. Results go to stdout, errors and progress
+Every command supports `--json` for code. Bare `weather --json` returns
+overview JSON describing the noun's query verbs, not API data; only the
+query sub-verbs — `weather latest --json`, `weather series --json`,
+`weather forecast --json`, `weather stats --json` — return the HTTP API's
+payload structure unchanged. Results go to stdout, errors and progress
 diagnostics to stderr, never mixed.
 
 ### Exit codes
@@ -261,6 +264,21 @@ CLIMATE_WEB_PORT=8095
 > service outside your LAN.
 
 The service is read-only over the collection: it has no write route at all.
+
+## Debugging MongoDB directly
+
+`weather-mongodb` publishes no host port by default. For local inspection
+with a GUI mongo client, apply the debug override on top of the base
+compose file — this only adds a port publish to the existing
+`weather-mongodb` service, never a second mongod process against the same
+volume:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d weather-mongodb
+```
+
+That reaches it at `127.0.0.1:27020`. Bring it back down the same way you
+brought up the rest of the stack; there is no separate teardown step.
 
 ## Development
 

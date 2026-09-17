@@ -8,12 +8,14 @@
 #     reach it over the compose network only, at
 #     mongodb://weather-mongodb:27017/weather (see docker/weather.env.example).
 #   - An OPTIONAL debug publish of mongo on host port 27020 is available but
-#     OFF by default. It is gated behind the `debug-mongo` compose profile,
-#     which is not active unless explicitly requested:
-#       docker compose --profile debug-mongo up -d
-#     (profiles were chosen over a second override file so the one-off
-#     debug port lives next to the service it debugs, with no extra file to
-#     keep in sync.)
+#     OFF by default, via a separate override file, docker-compose.debug.yml,
+#     applied on top of this one:
+#       docker compose -f docker-compose.yml -f docker-compose.debug.yml up -d weather-mongodb
+#     That override adds ONLY a `ports:` entry to the EXISTING weather-mongodb
+#     service below — never a second mongod process. A second process
+#     (e.g. via compose's `extends:`) sharing the same weather-mongodb-data
+#     volume would give two independent mongod instances concurrent write
+#     access to the same database files, risking corruption.
 #   - Every service ships json-file logging with rotation (max-size,
 #     max-file) so an unattended long-running stack doesn't fill the disk.
 #   - Secrets and the host config directory are supplied via
@@ -39,7 +41,7 @@ services:
     container_name: weather-mongodb
     restart: unless-stopped
     # No `ports:` by default — reachable only on the compose network as
-    # weather-mongodb:27017. The debug profile below adds a host publish.
+    # weather-mongodb:27017. docker-compose.debug.yml adds a host publish.
     volumes:
       - weather-mongodb-data:/data/db
     healthcheck:
@@ -52,21 +54,6 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-
-  # Debug-only mongo port publish, e.g. for inspecting the DB with a local
-  # GUI client. Disabled unless the `debug-mongo` profile is requested:
-  #   docker compose --profile debug-mongo up -d weather-mongodb-debug
-  # This is a second service (rather than adding `ports:` directly to
-  # weather-mongodb) because compose does not support per-attribute
-  # profile-gating — only whole services can be profile-gated.
-  weather-mongodb-debug:
-    extends:
-      service: weather-mongodb
-    container_name: weather-mongodb-debug
-    profiles:
-      - debug-mongo
-    ports:
-      - "127.0.0.1:27020:27017"
 
   weather-tracker:
     build:
@@ -99,9 +86,16 @@ services:
     container_name: weather-web
     command: ["python", "-m", "climate.weather.web"]
     restart: unless-stopped
-    env_file:
-      - docker/weather.env
+    # No `env_file:` here on purpose — the web process never talks to a
+    # provider, so it must never receive CLIMATE_OPENWEATHER_API_KEY or
+    # CLIMATE_IMS_API_TOKEN (those go only to weather-tracker below). Its
+    # environment is listed explicitly, with only what it reads:
+    # climate/weather/web/__main__.py resolves the bind/port from
+    # CLIMATE_WEB_BIND/CLIMATE_WEB_PORT and the config path from
+    # CLIMATE_WEATHER_CONFIG_PATH; the lazy climate.weather.mongo import it
+    # calls into resolves WEATHER_MONGO_URI, same default as the tracker.
     environment:
+      WEATHER_MONGO_URI: mongodb://weather-mongodb:27017/weather
       CLIMATE_WEATHER_CONFIG_PATH: /app/config/weather.json
       # INSIDE the container the service must listen on all interfaces and on
       # the mapped target port, or docker's port forward cannot reach it
