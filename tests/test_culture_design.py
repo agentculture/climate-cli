@@ -21,7 +21,8 @@ SCRIPT_PATH = REPO_ROOT / "scripts" / "check-culture-design.py"
 
 def _load_module():
     spec = importlib.util.spec_from_file_location("check_culture_design", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -73,7 +74,8 @@ class TestSplitHeaderAndBody:
     def test_splits_header_and_body(self) -> None:
         tokens_css = _tokens_css_text("a" * 40, SAMPLE_BODY)
         header, body = ccd.split_header_and_body(tokens_css)
-        assert header.startswith("/*") and header.endswith("*/")
+        assert header.startswith("/*")
+        assert header.endswith("*/")
         assert body == SAMPLE_BODY
 
     def test_missing_header_raises(self) -> None:

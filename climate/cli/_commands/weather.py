@@ -48,6 +48,10 @@ DEFAULT_TIMEOUT = 10.0
 _STACK_STATUS_HINT = "run 'climate stack status' to check the weather stack"
 _FLAG_HINT = "check the flag value against docs/weather-api.md"
 
+_JSON_HELP = "Emit structured JSON."
+_PROVIDER_HELP = "Restrict to this provider id."
+_LOCATION_HELP = "Restrict to this location label."
+
 _DURATION_RE = re.compile(r"^(\d+)\s*([smh]?)$", re.IGNORECASE)
 _DURATION_MULTIPLIERS = {"": 1, "s": 1, "m": 60, "h": 3600}
 
@@ -89,7 +93,7 @@ def fetch(url: str, *, timeout: float = DEFAULT_TIMEOUT) -> ApiResult:
         return ApiResult(status=exc.code, body=body)
     except urllib.error.URLError as exc:
         return ApiResult(error=str(exc.reason) if exc.reason else str(exc))
-    except (OSError, TimeoutError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         return ApiResult(error=str(exc))
 
 
@@ -116,7 +120,7 @@ def _error_envelope_message(body: bytes, fallback: str) -> str:
         message = envelope.get("error", {}).get("message")
         if isinstance(message, str) and message:
             return message
-    except (ValueError, UnicodeDecodeError, AttributeError):
+    except (ValueError, AttributeError):
         pass
     return fallback
 
@@ -148,7 +152,7 @@ def _request(path: str, params: Mapping[str, Any] | None = None) -> dict[str, An
     if 200 <= result.status < 300:
         try:
             payload = json.loads(result.body.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as exc:
+        except ValueError as exc:
             raise CliError(
                 code=EXIT_ENV_ERROR,
                 message=f"weather API returned invalid JSON: {exc}",
@@ -220,66 +224,92 @@ def _render_warnings(warnings: Sequence[Mapping[str, Any]]) -> list[str]:
     return ["", "Warnings:"] + [f"- {w.get('message', '')}" for w in warnings]
 
 
+def _render_missing(missing: Sequence[Mapping[str, Any]]) -> list[str]:
+    if not missing:
+        return []
+    lines = ["", "Missing:"]
+    for entry in missing:
+        lines.append(f"- {entry.get('provider')}/{entry.get('location')}: {entry.get('reason')}")
+    return lines
+
+
+def _no_readings_markdown(
+    missing: Sequence[Mapping[str, Any]], warnings: Sequence[Mapping[str, Any]]
+) -> str:
+    lines = ["No weather data available yet."]
+    lines.extend(_render_missing(missing))
+    lines.extend(_render_warnings(warnings))
+    return "\n".join(lines)
+
+
+def _latest_table_row(
+    location: Any, provider: Any, variable: str, value: Any, unit: Any, age_seconds: Any, stale: Any
+) -> dict[str, Any]:
+    return {
+        "location": location,
+        "provider": provider,
+        "variable": variable,
+        "value": value,
+        "unit": unit,
+        "age_seconds": age_seconds,
+        "stale": "STALE" if stale else "",
+    }
+
+
+def _latest_table_rows(readings: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for reading in readings:
+        location = reading.get("location")
+        provider = reading.get("provider")
+        values = reading.get("values") or {}
+        if not values:
+            rows.append(
+                _latest_table_row(
+                    location,
+                    provider,
+                    "-",
+                    None,
+                    None,
+                    reading.get("age_seconds"),
+                    reading.get("stale"),
+                )
+            )
+            continue
+        for name, value in values.items():
+            rows.append(
+                _latest_table_row(
+                    location,
+                    provider,
+                    name,
+                    value.get("value"),
+                    value.get("unit"),
+                    value.get("age_seconds"),
+                    value.get("stale"),
+                )
+            )
+    return rows
+
+
+_LATEST_TABLE_COLUMNS = [
+    ("location", "location"),
+    ("provider", "provider"),
+    ("variable", "variable"),
+    ("value", "value"),
+    ("unit", "unit"),
+    ("age_s", "age_seconds"),
+    ("stale", "stale"),
+]
+
+
 def _render_latest_markdown(payload: dict[str, Any], max_age_seconds: int | None) -> str:
     readings = payload.get("readings") or []
     missing = payload.get("missing") or []
     warnings = payload.get("warnings") or []
 
     if not readings:
-        lines = ["No weather data available yet."]
-        if missing:
-            lines.append("")
-            lines.append("Missing:")
-            for entry in missing:
-                lines.append(
-                    f"- {entry.get('provider')}/{entry.get('location')}: {entry.get('reason')}"
-                )
-        lines.extend(_render_warnings(warnings))
-        return "\n".join(lines)
+        return _no_readings_markdown(missing, warnings)
 
-    table_rows: list[dict[str, Any]] = []
-    for reading in readings:
-        location = reading.get("location")
-        provider = reading.get("provider")
-        values = reading.get("values") or {}
-        if not values:
-            table_rows.append(
-                {
-                    "location": location,
-                    "provider": provider,
-                    "variable": "-",
-                    "value": None,
-                    "unit": None,
-                    "age_seconds": reading.get("age_seconds"),
-                    "stale": "STALE" if reading.get("stale") else "",
-                }
-            )
-            continue
-        for name, value in values.items():
-            table_rows.append(
-                {
-                    "location": location,
-                    "provider": provider,
-                    "variable": name,
-                    "value": value.get("value"),
-                    "unit": value.get("unit"),
-                    "age_seconds": value.get("age_seconds"),
-                    "stale": "STALE" if value.get("stale") else "",
-                }
-            )
-
-    table = _render_table(
-        table_rows,
-        [
-            ("location", "location"),
-            ("provider", "provider"),
-            ("variable", "variable"),
-            ("value", "value"),
-            ("unit", "unit"),
-            ("age_s", "age_seconds"),
-            ("stale", "stale"),
-        ],
-    )
+    table = _render_table(_latest_table_rows(readings), _LATEST_TABLE_COLUMNS)
     lines = [table]
     if max_age_seconds is not None:
         lines.append("")
@@ -519,7 +549,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "weather",
         help="Query the weather-tracking HTTP API (see docs/weather-api.md).",
     )
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
     p.set_defaults(func=_no_verb, json=False)
     # Propagate the caller's parser class so verb-level parse errors route
     # through the same structured error contract as the top-level parser
@@ -527,27 +557,27 @@ def register(sub: argparse._SubParsersAction) -> None:
     noun_sub = p.add_subparsers(dest="weather_command", parser_class=type(p))
 
     ov = noun_sub.add_parser("overview", help="Describe the weather query verbs.")
-    ov.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    ov.add_argument("--json", action="store_true", help=_JSON_HELP)
     ov.set_defaults(func=cmd_overview)
 
     latest = noun_sub.add_parser(
         "latest", help="Newest reading per (provider, location). GET /latest."
     )
-    latest.add_argument("--provider", action="append", help="Restrict to this provider id.")
-    latest.add_argument("--location", action="append", help="Restrict to this location label.")
+    latest.add_argument("--provider", action="append", help=_PROVIDER_HELP)
+    latest.add_argument("--location", action="append", help=_LOCATION_HELP)
     latest.add_argument(
         "--max-age",
         dest="max_age",
         default=None,
         help="Staleness threshold: seconds, or '5m'/'1h'. Exceeding it exits 3.",
     )
-    latest.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    latest.add_argument("--json", action="store_true", help=_JSON_HELP)
     latest.set_defaults(func=cmd_latest)
 
     series = noun_sub.add_parser("series", help="One variable over time. GET /series.")
     series.add_argument("--variable", required=True, help="Variable id (required).")
-    series.add_argument("--provider", action="append", help="Restrict to this provider id.")
-    series.add_argument("--location", action="append", help="Restrict to this location label.")
+    series.add_argument("--provider", action="append", help=_PROVIDER_HELP)
+    series.add_argument("--location", action="append", help=_LOCATION_HELP)
     series.add_argument(
         "--kind", action="append", help="observation | model | forecast (repeatable)."
     )
@@ -558,19 +588,19 @@ def register(sub: argparse._SubParsersAction) -> None:
         "--agg", default=None, help="last | first | mean | min | max (default last)."
     )
     series.add_argument("--max-points", dest="max_points", type=int, default=None)
-    series.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    series.add_argument("--json", action="store_true", help=_JSON_HELP)
     series.set_defaults(func=cmd_series)
 
     forecast = noun_sub.add_parser("forecast", help="Stored forecasts. GET /forecast.")
-    forecast.add_argument("--provider", action="append", help="Restrict to this provider id.")
-    forecast.add_argument("--location", action="append", help="Restrict to this location label.")
+    forecast.add_argument("--provider", action="append", help=_PROVIDER_HELP)
+    forecast.add_argument("--location", action="append", help=_LOCATION_HELP)
     forecast.add_argument(
         "--variables", default=None, help="Comma-separated variable ids to restrict to."
     )
     forecast.add_argument("--issued-at", dest="issued_at", default=None)
     forecast.add_argument("--horizon-hours", dest="horizon_hours", type=int, default=None)
     forecast.add_argument("--step-hours", dest="step_hours", type=int, default=None)
-    forecast.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    forecast.add_argument("--json", action="store_true", help=_JSON_HELP)
     forecast.set_defaults(func=cmd_forecast)
 
     stats = noun_sub.add_parser(
@@ -579,8 +609,8 @@ def register(sub: argparse._SubParsersAction) -> None:
     stats.add_argument("--window", default=None, help="e.g. '90m', '24h', '7d' (default 24h).")
     stats.add_argument("--from", dest="from_", default=None)
     stats.add_argument("--to", dest="to", default=None)
-    stats.add_argument("--provider", action="append", help="Restrict to this provider id.")
-    stats.add_argument("--location", action="append", help="Restrict to this location label.")
+    stats.add_argument("--provider", action="append", help=_PROVIDER_HELP)
+    stats.add_argument("--location", action="append", help=_LOCATION_HELP)
     stats.add_argument("--bucket", type=int, default=None)
-    stats.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    stats.add_argument("--json", action="store_true", help=_JSON_HELP)
     stats.set_defaults(func=cmd_stats)

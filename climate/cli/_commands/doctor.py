@@ -149,16 +149,19 @@ def _safe_check(
     check_id: str,
     severity: str,
     remediation: str,
-    fn: Callable[[], tuple[bool, str] | tuple[bool, str, str]],
+    fn: Callable[[], tuple[bool, str, str | None]],
 ) -> Check:
     """Run one check body, never letting an exception escape.
 
-    ``fn`` returns ``(passed, message)`` or ``(passed, message,
-    override_remediation)``. Any exception becomes a failed check naming the
-    exception's class, using ``remediation`` as the hint.
+    ``fn`` always returns the one shape ``(passed, message,
+    override_remediation)``: ``override_remediation`` is ``None`` to fall
+    back to ``remediation`` on failure (and no remediation on success), or a
+    string to use verbatim regardless of ``passed``. Any exception becomes a
+    failed check naming the exception's class, using ``remediation`` as the
+    hint.
     """
     try:
-        result = fn()
+        passed, message, override_remediation = fn()
     except Exception as exc:  # noqa: BLE001 - a check must never raise
         return {
             "id": check_id,
@@ -167,17 +170,16 @@ def _safe_check(
             "message": f"{check_id} check raised {type(exc).__name__}: {exc}",
             "remediation": remediation,
         }
-    if len(result) == 3:
-        passed, message, override_remediation = result
+    if override_remediation is not None:
+        final_remediation = override_remediation
     else:
-        passed, message = result
-        override_remediation = "" if passed else remediation
+        final_remediation = "" if passed else remediation
     return {
         "id": check_id,
         "passed": bool(passed),
         "severity": severity,
         "message": message,
-        "remediation": override_remediation,
+        "remediation": final_remediation,
     }
 
 
@@ -224,122 +226,94 @@ def _fetch_json(
         return None, f"weather API returned HTTP {status} for {url}"
     try:
         payload = json.loads(result.body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError, AttributeError) as exc:
+    except (ValueError, AttributeError) as exc:
         return None, f"weather API returned invalid JSON for {url}: {exc}"
     if not isinstance(payload, dict):
         return None, f"weather API returned a non-object JSON payload for {url}"
     return payload, ""
 
 
-def _docker_data_root(disk_usage: Callable[[Path], Any]) -> Path:
+def _docker_data_root() -> Path:
     """Docker's data root if it's readable, else the caller's home directory."""
     if _DOCKER_DATA_ROOT.is_dir() and os.access(_DOCKER_DATA_ROOT, os.R_OK):
         return _DOCKER_DATA_ROOT
     return Path.home()
 
 
-def _weather_checks(
-    *,
-    run: Callable[..., Any] = subprocess.run,
-    fetch: Callable[..., Any] | None = None,
-    env: Mapping[str, str] = os.environ,
-    now: datetime | None = None,
-    which: Callable[[str], str | None] = shutil.which,
-    disk_usage: Callable[[Path], Any] = shutil.disk_usage,
-) -> list[Check]:
-    """The weather-tracker environment checks, ids prefixed ``weather_``.
+def _load_weather_config() -> weather_config.WeatherConfig:
+    """The user's weather config, falling back to defaults when it is missing/broken."""
+    try:
+        return weather_config.load_config()
+    except Exception:  # noqa: BLE001 - a missing/broken config must not crash doctor
+        return weather_config.WeatherConfig()
 
-    Every external interaction is an injectable seam so tests never touch
-    docker, a socket or the real disk:
 
-    * ``run`` — the subprocess runner for ``docker compose ... ps``.
-    * ``fetch`` — the HTTP GET used against the web API (see
-      :func:`climate.cli._commands.weather.fetch`); defaults to that same
-      function, resolved at call time so a test can monkeypatch
-      ``climate.cli._commands.weather.fetch`` instead.
-    * ``env`` — the environment mapping (base URL override, backup-age
-      threshold, provider credentials). Defaults to ``os.environ``.
-    * ``now`` — the wall clock instant.
-    * ``which`` — the ``PATH`` lookup used for "is docker installed".
-    * ``disk_usage`` — ``shutil.disk_usage``-shaped callable for the host
-      disk headroom check.
+def _provider_availability(
+    provider: Any, weather_cfg: weather_config.WeatherConfig, env: Mapping[str, str]
+) -> Any:
+    settings = weather_cfg.providers.get(provider.id)
+    return provider.availability(settings, env)
 
-    Severity policy: docker missing / stack not running / web API
-    unreachable are ``error`` (this function only reaches them once a
-    ``docker-compose.yml`` was found, i.e. a repo checkout); everything else
-    is ``warning``. From a wheel install with no compose file, this returns
-    a single ``info`` check and skips the rest entirely.
-    """
-    if fetch is None:
-        fetch = weather.fetch
-    if now is None:
-        now = datetime.now(UTC)
 
-    compose = stack.find_compose()
-    if compose is None:
-        return [
-            {
-                "id": "weather_managed_from_repo_checkout",
-                "passed": True,
-                "severity": "info",
-                "message": (
-                    "no docker-compose.yml found; the weather stack is managed from a "
-                    "climate-cli repo checkout, not this wheel install"
-                ),
-                "remediation": "",
-            }
-        ]
-
-    checks: list[Check] = []
-
-    # 1. docker available.
-    docker_path = which("docker")
-
-    def _check_docker() -> tuple[bool, str]:
+def _check_docker_available(which: Callable[[str], str | None]) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
+        docker_path = which("docker")
         if docker_path:
-            return True, f"docker found at {docker_path}"
-        return False, "docker is not installed or not on PATH"
+            return True, f"docker found at {docker_path}", None
+        return False, "docker is not installed or not on PATH", None
 
-    checks.append(
-        _safe_check("weather_docker_available", "error", _DOCKER_INSTALL_HINT, _check_docker)
-    )
+    return _safe_check("weather_docker_available", "error", _DOCKER_INSTALL_HINT, _fn)
 
-    # 2. stack running.
-    services_box: list[list[dict[str, object]]] = []
 
-    def _check_stack() -> tuple[bool, str, str]:
+def _check_stack_running(compose: Path, run: Callable[..., Any]) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
         services, failure = _compose_ps_services(compose, run)
-        services_box.append(services)
         if failure:
             return False, f"docker compose ps failed: {failure}", _STACK_STATUS_HINT
         if not services:
             return False, "the weather stack has no running services", _STACK_UP_HINT
         running = [s for s in services if s.get("state") == "running"]
-        if len(running) != len(services):
-            names = ", ".join(str(s.get("name")) for s in services)
-            return False, f"not all weather-stack services are running: {names}", _STACK_UP_HINT
         names = ", ".join(str(s.get("name")) for s in services)
-        return True, f"weather stack running: {names}", ""
+        if len(running) != len(services):
+            return False, f"not all weather-stack services are running: {names}", _STACK_UP_HINT
+        return True, f"weather stack running: {names}", None
 
-    checks.append(_safe_check("weather_stack_running", "error", _STACK_UP_HINT, _check_stack))
+    return _safe_check("weather_stack_running", "error", _STACK_UP_HINT, _fn)
 
-    # 3. web API reachable, plus everything derived from GET /health.
-    base_url = _resolve_weather_base_url(env)
+
+def _check_web_api_reachable(
+    fetch: Callable[..., Any], base_url: str
+) -> tuple[Check, dict[str, Any] | None]:
+    """Returns ``(check, health_payload)``; ``health_payload`` is ``None`` on failure."""
     health_box: list[dict[str, Any] | None] = []
 
-    def _check_api() -> tuple[bool, str, str]:
+    def _fn() -> tuple[bool, str, str | None]:
         payload, error = _fetch_json(fetch, base_url, "/health")
         health_box.append(payload)
         if payload is None:
             return False, error, _STACK_STATUS_HINT
-        return True, f"weather API reachable at {base_url} (status: {payload.get('status')})", ""
+        message = f"weather API reachable at {base_url} (status: {payload.get('status')})"
+        return True, message, None
 
-    checks.append(_safe_check("weather_web_api_reachable", "error", _STACK_STATUS_HINT, _check_api))
+    check = _safe_check("weather_web_api_reachable", "error", _STACK_STATUS_HINT, _fn)
     health = health_box[0] if health_box else None
+    return check, health
 
-    # 4. newest fetch age per provider (from health.providers[]).
+
+def _check_fetch_ages(
+    health: dict[str, Any] | None,
+    weather_cfg: weather_config.WeatherConfig,
+    env: Mapping[str, str],
+) -> list[Check]:
+    """``weather_fetch_age``/``weather_fetch_age_<id>`` — freshness per provider entry.
+
+    A provider that is merely disabled (no credentials, or disabled in
+    settings) is reported as a passed ``info`` check rather than a failing
+    ``warning`` — it has no fetch recorded because it was never asked to
+    run, which is expected, not a problem worth surfacing noisily.
+    """
     if health is None:
-        checks.append(
+        return [
             {
                 "id": "weather_fetch_age",
                 "passed": False,
@@ -347,42 +321,69 @@ def _weather_checks(
                 "message": "cannot determine provider fetch ages: weather API unreachable",
                 "remediation": _STACK_STATUS_HINT,
             }
-        )
-    else:
-        for entry in health.get("providers") or []:
-            provider_id = entry.get("provider", "?")
+        ]
 
-            def _check_fetch_age(entry: dict[str, Any] = entry) -> tuple[bool, str]:
-                age = entry.get("newest_fetch_age_seconds")
-                stale = bool(entry.get("stale"))
-                if age is None:
-                    return False, f"{entry.get('provider', '?')}: no fetch recorded yet"
-                if stale:
-                    return False, f"{entry.get('provider', '?')}: newest fetch age {age}s (stale)"
-                return True, f"{entry.get('provider', '?')}: newest fetch age {age}s"
+    providers_by_id = {p.id: p for p in weather_providers.iter_providers()}
+    checks: list[Check] = []
+    for entry in health.get("providers") or []:
+        provider_id = entry.get("provider", "?")
+        provider = providers_by_id.get(provider_id)
+        availability = None
+        if provider is not None:
+            try:
+                availability = _provider_availability(provider, weather_cfg, env)
+            except Exception:  # noqa: BLE001 - a check must never raise
+                availability = None
 
+        if availability is not None and not availability.enabled:
+            message = f"{provider_id}: disabled ({availability.reason}); no fetch expected"
             checks.append(
-                _safe_check(
-                    f"weather_fetch_age_{provider_id}",
-                    "warning",
-                    _STACK_STATUS_HINT,
-                    _check_fetch_age,
-                )
+                {
+                    "id": f"weather_fetch_age_{provider_id}",
+                    "passed": True,
+                    "severity": "info",
+                    "message": message,
+                    "remediation": "",
+                }
             )
+            continue
 
-    # 5. provider credentials present (enabled providers only; never a value).
-    try:
-        weather_cfg = weather_config.load_config()
-    except Exception:  # noqa: BLE001 - a missing/broken config must not crash doctor
-        weather_cfg = weather_config.WeatherConfig()
+        def _check_fetch_age(entry: dict[str, Any] = entry) -> tuple[bool, str, str | None]:
+            age = entry.get("newest_fetch_age_seconds")
+            stale = bool(entry.get("stale"))
+            provider_id = entry.get("provider", "?")
+            if age is None:
+                return False, f"{provider_id}: no fetch recorded yet", None
+            if stale:
+                return False, f"{provider_id}: newest fetch age {age}s (stale)", None
+            return True, f"{provider_id}: newest fetch age {age}s", None
 
+        checks.append(
+            _safe_check(
+                f"weather_fetch_age_{provider_id}",
+                "warning",
+                _STACK_STATUS_HINT,
+                _check_fetch_age,
+            )
+        )
+
+    return checks
+
+
+def _check_provider_credentials(
+    weather_cfg: weather_config.WeatherConfig, env: Mapping[str, str]
+) -> list[Check]:
+    """``weather_provider_credentials_<id>`` — one check per credentialed provider.
+
+    Never reports a value, only whether the env var is set.
+    """
+    checks: list[Check] = []
     for provider in weather_providers.iter_providers():
         if not provider.auth.required or not provider.auth.env_var:
             continue
 
         try:
-            settings = weather_cfg.providers.get(provider.id)
-            availability = provider.availability(settings, env)
+            availability = _provider_availability(provider, weather_cfg, env)
         except Exception as exc:  # noqa: BLE001 - a check must never raise
             checks.append(
                 {
@@ -419,86 +420,145 @@ def _weather_checks(
                 ),
             }
         )
+    return checks
 
-    # 6. database size (from health.store.size_bytes).
-    def _check_db_size() -> tuple[bool, str]:
+
+def _check_database_size(health: dict[str, Any] | None) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
         if health is None:
-            return False, "cannot determine database size: weather API unreachable"
+            return False, "cannot determine database size: weather API unreachable", None
         store = health.get("store") or {}
         if not store.get("reachable"):
-            return False, "database size unknown: store unreachable"
+            return False, "database size unknown: store unreachable", None
         size_bytes = store.get("size_bytes")
         if size_bytes is None:
-            return False, "database size unknown: store did not report a size"
+            return False, "database size unknown: store did not report a size", None
         mib = size_bytes / (1024 * 1024)
-        return True, f"database size: {size_bytes} bytes ({mib:.1f} MiB)"
+        return True, f"database size: {size_bytes} bytes ({mib:.1f} MiB)", None
 
-    checks.append(
-        _safe_check("weather_database_size", "warning", _STACK_STATUS_HINT, _check_db_size)
-    )
+    return _safe_check("weather_database_size", "warning", _STACK_STATUS_HINT, _fn)
 
-    # 7. host disk headroom (docker's data root if readable, else $HOME).
-    def _check_disk() -> tuple[bool, str]:
-        target = _docker_data_root(disk_usage)
+
+def _check_disk_headroom(env: Mapping[str, str], disk_usage: Callable[[Path], Any]) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
+        target = _docker_data_root()
         usage = disk_usage(target)
         free_gib = usage.free / (1024**3)
         min_gib = int(env.get(_DISK_MIN_BYTES_ENV, _DEFAULT_DISK_MIN_GIB))
         if free_gib < min_gib:
-            return False, f"{target}: only {free_gib:.1f} GiB free (threshold {min_gib} GiB)"
-        return True, f"{target}: {free_gib:.1f} GiB free"
+            return False, f"{target}: only {free_gib:.1f} GiB free (threshold {min_gib} GiB)", None
+        return True, f"{target}: {free_gib:.1f} GiB free", None
 
-    checks.append(
-        _safe_check(
-            "weather_disk_headroom",
-            "warning",
-            "free disk space on the docker host, or lower the threshold via "
-            f"{_DISK_MIN_BYTES_ENV}",
-            _check_disk,
-        )
+    remediation = (
+        "free disk space on the docker host, or lower the threshold via " f"{_DISK_MIN_BYTES_ENV}"
     )
+    return _safe_check("weather_disk_headroom", "warning", remediation, _fn)
 
-    # 8. newest backup age.
-    def _check_backup_age() -> tuple[bool, str]:
+
+def _check_backup_age(env: Mapping[str, str]) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
         result = backup.newest_backup()
         if result is None:
-            return False, "no weather backup found"
+            return False, "no weather backup found", None
         path, age_seconds = result
         max_days = int(env.get(_BACKUP_MAX_AGE_ENV, _DEFAULT_BACKUP_MAX_AGE_DAYS))
         age_days = age_seconds / _SECONDS_PER_DAY
         if age_days > max_days:
-            return False, f"newest backup ({path.name}) is {age_days:.1f} days old (> {max_days}d)"
-        return True, f"newest backup ({path.name}) is {age_days:.1f} days old"
+            message = f"newest backup ({path.name}) is {age_days:.1f} days old (> {max_days}d)"
+            return False, message, None
+        return True, f"newest backup ({path.name}) is {age_days:.1f} days old", None
 
-    checks.append(
-        _safe_check(
-            "weather_backup_age",
-            "warning",
-            "run 'climate-cli backup dump'",
-            _check_backup_age,
-        )
-    )
+    return _safe_check("weather_backup_age", "warning", "run 'climate-cli backup dump'", _fn)
 
-    # 9. host-CLI versus tracker image version skew.
-    def _check_version_skew() -> tuple[bool, str]:
+
+def _check_tracker_version(health: dict[str, Any] | None) -> Check:
+    def _fn() -> tuple[bool, str, str | None]:
         if health is None:
-            return False, "cannot determine tracker version: weather API unreachable"
+            return False, "cannot determine tracker version: weather API unreachable", None
         tracker_version = health.get("tracker_version")
         if tracker_version is None:
-            return False, "tracker has not reported a heartbeat yet"
+            return False, "tracker has not reported a heartbeat yet", None
         if tracker_version != HOST_VERSION:
-            return False, (
+            message = (
                 f"tracker version {tracker_version} differs from host CLI version {HOST_VERSION}"
             )
-        return True, f"tracker version {tracker_version} matches host CLI version {HOST_VERSION}"
+            return False, message, None
+        message = f"tracker version {tracker_version} matches host CLI version {HOST_VERSION}"
+        return True, message, None
 
-    checks.append(
-        _safe_check(
-            "weather_tracker_version",
-            "warning",
-            "rebuild/redeploy the weather-tracker image to match the host CLI version",
-            _check_version_skew,
-        )
-    )
+    remediation = "rebuild/redeploy the weather-tracker image to match the host CLI version"
+    return _safe_check("weather_tracker_version", "warning", remediation, _fn)
+
+
+def _weather_checks(
+    *,
+    run: Callable[..., Any] = subprocess.run,
+    fetch: Callable[..., Any] | None = None,
+    env: Mapping[str, str] = os.environ,
+    now: datetime | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+    disk_usage: Callable[[Path], Any] = shutil.disk_usage,
+) -> list[Check]:
+    """The weather-tracker environment checks, ids prefixed ``weather_``.
+
+    A thin orchestrator: each check (or check family) lives in its own
+    ``_check_*`` function above, and this function only assembles them in
+    order. Every external interaction is an injectable seam so tests never
+    touch docker, a socket or the real disk:
+
+    * ``run`` — the subprocess runner for ``docker compose ... ps``.
+    * ``fetch`` — the HTTP GET used against the web API (see
+      :func:`climate.cli._commands.weather.fetch`); defaults to that same
+      function, resolved at call time so a test can monkeypatch
+      ``climate.cli._commands.weather.fetch`` instead.
+    * ``env`` — the environment mapping (base URL override, backup-age
+      threshold, provider credentials). Defaults to ``os.environ``.
+    * ``now`` — the wall clock instant.
+    * ``which`` — the ``PATH`` lookup used for "is docker installed".
+    * ``disk_usage`` — ``shutil.disk_usage``-shaped callable for the host
+      disk headroom check.
+
+    Severity policy: docker missing / stack not running / web API
+    unreachable are ``error`` (this function only reaches them once a
+    ``docker-compose.yml`` was found, i.e. a repo checkout); everything else
+    is ``warning`` (or ``info`` for a disabled provider's fetch-age check).
+    From a wheel install with no compose file, this returns a single
+    ``info`` check and skips the rest entirely.
+    """
+    if fetch is None:
+        fetch = weather.fetch
+    if now is None:
+        now = datetime.now(UTC)
+
+    compose = stack.find_compose()
+    if compose is None:
+        return [
+            {
+                "id": "weather_managed_from_repo_checkout",
+                "passed": True,
+                "severity": "info",
+                "message": (
+                    "no docker-compose.yml found; the weather stack is managed from a "
+                    "climate-cli repo checkout, not this wheel install"
+                ),
+                "remediation": "",
+            }
+        ]
+
+    weather_cfg = _load_weather_config()
+    base_url = _resolve_weather_base_url(env)
+
+    checks: list[Check] = [_check_docker_available(which), _check_stack_running(compose, run)]
+
+    api_check, health = _check_web_api_reachable(fetch, base_url)
+    checks.append(api_check)
+
+    checks.extend(_check_fetch_ages(health, weather_cfg, env))
+    checks.extend(_check_provider_credentials(weather_cfg, env))
+    checks.append(_check_database_size(health))
+    checks.append(_check_disk_headroom(env, disk_usage))
+    checks.append(_check_backup_age(env))
+    checks.append(_check_tracker_version(health))
 
     return checks
 
@@ -545,9 +605,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "doctor",
-        help=(
-            "Check the agent-identity invariants and the weather-tracker's " "runtime environment."
-        ),
+        help="Check the agent-identity invariants and the weather-tracker's runtime environment.",
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")
     p.set_defaults(func=cmd_doctor)

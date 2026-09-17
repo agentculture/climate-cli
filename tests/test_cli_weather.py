@@ -192,7 +192,8 @@ def test_latest_fresh_json_matches_payload_shape(monkeypatch, capsys):
     out_payload = json.loads(capsys.readouterr().out)
     assert out_payload["stale"] is False
     assert out_payload["readings"][0]["provider"] == "open-meteo"
-    assert "readings" in out_payload and "warnings" in out_payload
+    assert "readings" in out_payload
+    assert "warnings" in out_payload
 
 
 def test_latest_stale_from_api_flag_exits_3(monkeypatch, capsys):
@@ -493,7 +494,8 @@ def test_weather_module_imports_only_stdlib_and_climate_cli():
     no other ``climate`` subpackage (it never talks to the store or MongoDB
     directly, only the HTTP API)."""
     spec = importlib.util.find_spec("climate.cli._commands.weather")
-    assert spec is not None and spec.origin
+    assert spec is not None
+    assert spec.origin
     source = Path(spec.origin).read_text(encoding="utf-8")
     tree = ast.parse(source)
     stdlib_names = set(sys.stdlib_module_names)
