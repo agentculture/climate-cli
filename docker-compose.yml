@@ -1,0 +1,113 @@
+# Weather-tracking service — mongo + tracker + web, built from one image.
+#
+# Precedent: /home/spark/git/data-refinery-cli/docker-compose.yml (house
+# style for the mongo service: mongo:8.0, named volume, unless-stopped,
+# mongosh ping healthcheck). Differences deliberately made for this project:
+#
+#   - weather-mongodb publishes NO host port by default. tracker and web
+#     reach it over the compose network only, at
+#     mongodb://weather-mongodb:27017/weather (see docker/weather.env.example).
+#   - An OPTIONAL debug publish of mongo on host port 27020 is available but
+#     OFF by default. It is gated behind the `debug-mongo` compose profile,
+#     which is not active unless explicitly requested:
+#       docker compose --profile debug-mongo up -d
+#     (profiles were chosen over a second override file so the one-off
+#     debug port lives next to the service it debugs, with no extra file to
+#     keep in sync.)
+#   - Every service ships json-file logging with rotation (max-size,
+#     max-file) so an unattended long-running stack doesn't fill the disk.
+#   - Secrets and the host config path are supplied via docker/weather.env
+#     (gitignored — NOT the pattern already ignored by this repo's
+#     `.env`/`.envrc` rules, so `.gitignore` gets one line added for it).
+#     See docker/weather.env.example for every variable, documented with
+#     placeholder values only.
+#
+# Bring the stack up (once the `weather` extra + tracker/web modules exist —
+# out of scope for this task):
+#   docker compose --env-file docker/weather.env up -d
+name: climate-weather
+
+services:
+  weather-mongodb:
+    image: mongo:8.0
+    container_name: weather-mongodb
+    restart: unless-stopped
+    # No `ports:` by default — reachable only on the compose network as
+    # weather-mongodb:27017. The debug profile below adds a host publish.
+    volumes:
+      - weather-mongodb-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Debug-only mongo port publish, e.g. for inspecting the DB with a local
+  # GUI client. Disabled unless the `debug-mongo` profile is requested:
+  #   docker compose --profile debug-mongo up -d weather-mongodb-debug
+  # This is a second service (rather than adding `ports:` directly to
+  # weather-mongodb) because compose does not support per-attribute
+  # profile-gating — only whole services can be profile-gated.
+  weather-mongodb-debug:
+    extends:
+      service: weather-mongodb
+    container_name: weather-mongodb-debug
+    profiles:
+      - debug-mongo
+    ports:
+      - "127.0.0.1:27020:27017"
+
+  weather-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: climate-weather-tracker
+    container_name: weather-tracker
+    command: ["python", "-m", "climate.weather.tracker"]
+    restart: unless-stopped
+    env_file:
+      - docker/weather.env
+    volumes:
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-./config}:/app/config:ro
+    depends_on:
+      weather-mongodb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  weather-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: climate-weather-web
+    container_name: weather-web
+    command: ["python", "-m", "climate.weather.web"]
+    restart: unless-stopped
+    env_file:
+      - docker/weather.env
+    volumes:
+      - ${CLIMATE_WEATHER_CONFIG_DIR:-./config}:/app/config:ro
+    ports:
+      - "${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8790}:8790"
+    depends_on:
+      weather-mongodb:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# Docker-managed named volume — no bind-mount permission friction, portable
+# across hosts. Nothing in this repo runs `down -v`, `--volumes`,
+# `volume rm`, or `volume prune` against it (see tests/weather/test_compose.py).
+volumes:
+  weather-mongodb-data:
