@@ -21,6 +21,10 @@ from dataclasses import dataclass
 EXIT_SUCCESS = 0
 EXIT_USER_ERROR = 1
 EXIT_ENV_ERROR = 2
+# Dedicated code for "data returned but stale beyond the caller's --max-age"
+# (climate weather latest --max-age), per docs/weather-api.md's client
+# obligations table. Distinct from EXIT_ENV_ERROR (service unreachable).
+EXIT_STALE = 3
 
 
 @dataclass
