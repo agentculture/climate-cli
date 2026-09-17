@@ -46,6 +46,8 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, ClassVar, Mapping, Protocol, Sequence, runtime_checkable
 
+from climate.weather.http import redact, redact_headers
+
 __all__ = [
     "Attribution",
     "AuthRequirement",
@@ -316,9 +318,25 @@ class RequestSpec:
 
     def __post_init__(self) -> None:
         if not self.url.lower().startswith("https://"):
-            raise ValueError(f"provider requests must use https: {self.url!r}")
+            raise ValueError(f"provider requests must use https: {redact(self.url)!r}")
         object.__setattr__(self, "headers", MappingProxyType(dict(self.headers)))
         object.__setattr__(self, "context", MappingProxyType(dict(self.context)))
+
+    @property
+    def redacted_url(self) -> str:
+        """``url`` with API keys and tokens removed - the only form to store or log."""
+        return redact(self.url) or ""
+
+    def __repr__(self) -> str:
+        # ``url`` and ``headers`` may carry a live API key (OpenWeather's
+        # ``appid``, IMS's Authorization header): never let a stray
+        # ``repr``/``str``/log call print it.
+        return (
+            f"RequestSpec(provider_id={self.provider_id!r}, "
+            f"location_label={self.location_label!r}, url={self.redacted_url!r}, "
+            f"method={self.method!r}, headers={redact_headers(self.headers)!r}, "
+            f"purpose={self.purpose!r})"
+        )
 
 
 # --- the provider contract ------------------------------------------------
