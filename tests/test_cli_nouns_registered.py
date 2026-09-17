@@ -90,7 +90,7 @@ def _fake_latest_payload() -> dict[str, object]:
     }
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_fetch(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Replace the weather module's single HTTP seam; record requested URLs."""
     seen: list[str] = []
@@ -110,7 +110,8 @@ def test_weather_latest_markdown(fake_fetch: list[str], capsys: pytest.CaptureFi
     out = capsys.readouterr().out
     assert "temperature" in out
     assert "21.5" in out
-    assert fake_fetch and fake_fetch[0].endswith("/api/v1/latest")
+    assert fake_fetch
+    assert fake_fetch[0].endswith("/api/v1/latest")
 
 
 def test_weather_latest_json(fake_fetch: list[str], capsys: pytest.CaptureFixture[str]) -> None:

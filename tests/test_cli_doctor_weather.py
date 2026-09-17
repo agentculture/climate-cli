@@ -343,6 +343,57 @@ def test_provider_credentials_present_passes(
     assert "secret-token-value" not in dumped
 
 
+def test_fetch_age_for_disabled_provider_passes_as_info(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A provider disabled for lack of credentials must not fail its
+    fetch-age check — no fetch is expected from a provider that never runs,
+    so this is a passed ``info`` check, not a noisy failing ``warning``."""
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text("services: {}\n")
+    monkeypatch.setattr(stack_mod, "find_compose", lambda: compose)
+    services = [{"Name": "n", "Service": "n", "State": "running", "Health": ""}]
+    payload = _health_payload(
+        providers=[
+            {
+                "provider": "open-meteo",
+                "enabled": True,
+                "newest_fetch_at": "2026-09-17T08:35:02Z",
+                "newest_fetch_age_seconds": 10,
+                "stale": False,
+            },
+            {
+                "provider": "openweather",
+                "enabled": False,
+                "newest_fetch_at": None,
+                "newest_fetch_age_seconds": None,
+                "stale": False,
+            },
+        ]
+    )
+    checks = doctor._weather_checks(
+        run=_fake_run_ok(services),
+        fetch=_fake_fetch_for(payload),
+        env={},  # no CLIMATE_OPENWEATHER_API_KEY set -> disabled, not a fetch problem
+        now=NOW,
+        which=lambda name: "/usr/bin/docker",
+    )
+    fetch_age = _by_id(checks, "weather_fetch_age_openweather")
+    assert fetch_age["passed"] is True
+    assert fetch_age["severity"] == "info"
+    assert "disabled" in fetch_age["message"]
+
+    # the still-enabled provider is unaffected.
+    other_fetch_age = _by_id(checks, "weather_fetch_age_open-meteo")
+    assert other_fetch_age["passed"] is True
+    assert other_fetch_age["severity"] == "warning"
+
+    # a distinct, deliberately noisier check keeps flagging the missing
+    # credential itself — this fix only quiets the fetch-age check.
+    cred_check = _by_id(checks, "weather_provider_credentials_openweather")
+    assert cred_check["passed"] is False
+
+
 # --- disk headroom + backup age ---------------------------------------------
 
 

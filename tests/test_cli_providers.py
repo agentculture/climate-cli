@@ -168,7 +168,7 @@ def _uninstall(tmp_path: Path, module_name: str) -> None:
     registry.clear_cache()
 
 
-@pytest.fixture()
+@pytest.fixture
 def two_fake_providers(tmp_path: Path) -> Any:
     """Register two complete fake adapters (one keyed, one unlimited/keyless)."""
     _install(tmp_path, "good_test_adapter.py", _GOOD_ADAPTER)
@@ -180,7 +180,7 @@ def two_fake_providers(tmp_path: Path) -> Any:
         _uninstall(tmp_path, "unlimited_test_adapter")
 
 
-@pytest.fixture()
+@pytest.fixture
 def broken_provider(tmp_path: Path) -> Any:
     """Register one fake adapter that is missing its attribution."""
     _install(tmp_path, "no_attribution_test_adapter.py", _MISSING_ATTRIBUTION_ADAPTER)
