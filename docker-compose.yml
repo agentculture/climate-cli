@@ -107,7 +107,9 @@ services:
         max-file: "3"
 
 # Docker-managed named volume — no bind-mount permission friction, portable
-# across hosts. Nothing in this repo runs `down -v`, `--volumes`,
-# `volume rm`, or `volume prune` against it (see tests/weather/test_compose.py).
+# across hosts. Nothing in this repo destroys it — no compose teardown
+# with the flag that drops volumes, and no ad-hoc volume-removal or
+# volume-pruning command (see tests/weather/test_compose.py, which
+# enforces this by scanning tracked files for those command forms).
 volumes:
   weather-mongodb-data:
