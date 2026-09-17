@@ -9,7 +9,10 @@ import pytest
 
 from climate.weather.http import FetchResult, fetch, redact, redact_headers
 
-OPENWEATHER_APPID = "abcd1234efgh5678ijkl9012mnop3456"
+# A fake key, assembled at import time: a 32-character literal here trips
+# GitHub push protection's "Openweather API Key" pattern even though it is a
+# placeholder. Never paste anything key-shaped into a test.
+OPENWEATHER_APPID = "-".join(["fake", "appid", "for", "redaction", "tests"])
 OPENWEATHER_URL = (
     "https://api.openweathermap.org/data/2.5/weather" f"?q=London&appid={OPENWEATHER_APPID}"
 )
