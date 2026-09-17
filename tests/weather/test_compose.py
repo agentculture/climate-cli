@@ -198,10 +198,12 @@ def test_web_has_no_env_file_and_no_provider_credentials(compose):
     environment = web.get("environment") or {}
     for var_name in environment:
         upper = var_name.upper()
-        assert "KEY" not in upper and "TOKEN" not in upper, (
+        reason = (
             f"weather-web environment must not contain a credential-shaped "
             f"variable, found {var_name!r}"
         )
+        assert "KEY" not in upper, reason
+        assert "TOKEN" not in upper, reason
 
 
 def test_web_mongo_uri_matches_tracker_default(compose):

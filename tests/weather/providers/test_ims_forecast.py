@@ -155,7 +155,8 @@ def test_a_cities_mapping_gives_each_location_only_its_own_candidates() -> None:
 
     home_readings = provider.normalize(_fetch_record(home_spec.url))
     away_readings = provider.normalize(_fetch_record(away_spec.url, location=other.label))
-    assert home_readings and away_readings
+    assert home_readings
+    assert away_readings
     assert {r.source for r in home_readings} == {"ims-forecast/Elat"}
     assert {r.source for r in away_readings} == {"ims-forecast/Tel Aviv - Yafo"}
 

@@ -10,7 +10,6 @@ real — every seam is a fake.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,8 +21,6 @@ from climate.cli._commands import backup as backup_mod
 from climate.cli._commands import doctor
 from climate.cli._commands import stack as stack_mod
 from tests.weather.neutral import fake_secret
-
-NOW = datetime(2026, 9, 17, 8, 35, 12, tzinfo=UTC)
 
 
 def _fake_run_ok(services):
@@ -139,7 +136,6 @@ def test_weather_checks_skip_when_no_compose(monkeypatch: pytest.MonkeyPatch) ->
         run=_fake_run_ok([]),
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: None,
     )
     assert len(checks) == 1
@@ -162,7 +158,6 @@ def test_docker_missing_is_error_in_repo_checkout(
         run=_fake_run_fail(),
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: None,
     )
     docker_check = _by_id(checks, "weather_docker_available")
@@ -181,7 +176,6 @@ def test_stopped_stack_yields_failed_check_not_exception(
         run=_fake_run_ok([]),  # no services => stack not running
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     stack_check = _by_id(checks, "weather_stack_running")
@@ -202,7 +196,6 @@ def test_stack_running_when_services_up(tmp_path: Path, monkeypatch: pytest.Monk
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     stack_check = _by_id(checks, "weather_stack_running")
@@ -221,7 +214,6 @@ def test_compose_failure_never_raises(tmp_path: Path, monkeypatch: pytest.Monkey
         run=_boom_run,
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     stack_check = _by_id(checks, "weather_stack_running")
@@ -243,7 +235,6 @@ def test_web_api_reachable_and_derived_checks(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     api_check = _by_id(checks, "weather_web_api_reachable")
@@ -271,7 +262,6 @@ def test_web_api_unreachable_yields_failed_checks_not_exceptions(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     api_check = _by_id(checks, "weather_web_api_reachable")
@@ -297,7 +287,6 @@ def test_tracker_version_skew_names_both_versions(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload(tracker_version="0.0.1-old")),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     version_check = _by_id(checks, "weather_tracker_version")
@@ -318,7 +307,6 @@ def test_tracker_version_null_reports_no_heartbeat(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload(tracker_version=None)),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     version_check = _by_id(checks, "weather_tracker_version")
@@ -342,7 +330,6 @@ def test_provider_credentials_warning_names_env_var_not_value(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env=env,
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     ow_check = _by_id(checks, "weather_provider_credentials_openweather")
@@ -377,7 +364,6 @@ def test_provider_credentials_present_passes(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload(), providers=providers),
         env=env,
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     ow_check = _by_id(checks, "weather_provider_credentials_openweather")
@@ -412,7 +398,6 @@ def test_provider_credentials_follow_the_api_not_this_host_shell(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload(), providers=providers),
         env={},  # the host shell has no credential at all
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     ow_check = _by_id(checks, "weather_provider_credentials_openweather")
@@ -437,7 +422,6 @@ def test_provider_credentials_fall_back_honestly_when_the_api_is_unreachable(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_unreachable(),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     ow_check = _by_id(checks, "weather_provider_credentials_openweather")
@@ -461,7 +445,6 @@ def test_provider_credentials_unknown_when_the_api_omits_the_provider(
             _health_payload(), providers=_providers_payload([_provider_row("open-meteo")])
         ),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     ow_check = _by_id(checks, "weather_provider_credentials_openweather")
@@ -501,7 +484,6 @@ def test_fetch_age_for_disabled_provider_passes_as_info(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(payload),
         env={},  # no CLIMATE_OPENWEATHER_API_KEY set -> disabled, not a fetch problem
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     fetch_age = _by_id(checks, "weather_fetch_age_openweather")
@@ -539,7 +521,6 @@ def test_disk_headroom_warning_below_threshold(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
         disk_usage=_fake_disk_usage,
     )
@@ -558,7 +539,6 @@ def test_backup_age_warning_when_none(tmp_path: Path, monkeypatch: pytest.Monkey
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     backup_check = _by_id(checks, "weather_backup_age")
@@ -579,7 +559,6 @@ def test_backup_age_warning_when_stale(tmp_path: Path, monkeypatch: pytest.Monke
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     backup_check = _by_id(checks, "weather_backup_age")
@@ -599,7 +578,6 @@ def test_backup_age_custom_threshold_env(tmp_path: Path, monkeypatch: pytest.Mon
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={"CLIMATE_WEATHER_BACKUP_MAX_AGE_DAYS": "1"},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     backup_check = _by_id(checks, "weather_backup_age")
@@ -619,7 +597,6 @@ def test_backup_age_passes_when_fresh(tmp_path: Path, monkeypatch: pytest.Monkey
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     backup_check = _by_id(checks, "weather_backup_age")
@@ -640,7 +617,6 @@ def test_every_weather_check_id_prefixed_and_shaped(
         run=_fake_run_ok(services),
         fetch=_fake_fetch_for(_health_payload()),
         env={},
-        now=NOW,
         which=lambda name: "/usr/bin/docker",
     )
     assert checks

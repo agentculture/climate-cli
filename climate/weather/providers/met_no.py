@@ -300,9 +300,9 @@ class MetNoProvider(WeatherProvider):
         self,
         location: LocationLike,
         settings: ProviderSettingsLike | None = None,
-        last_fetch: FetchRecord | None = None,
         *,
         env: Mapping[str, str] | None = None,
+        last_fetch: FetchRecord | None = None,
     ) -> tuple[RequestSpec, ...]:
         """Describe the one GET this provider ever makes for a location.
 

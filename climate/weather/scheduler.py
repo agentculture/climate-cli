@@ -66,7 +66,7 @@ import math
 import random
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
@@ -247,6 +247,20 @@ class FetchOutcome:
         if self.reason:
             parts.append(f"({self.reason})")
         return " ".join(parts)
+
+
+def _field_values(instance: Any) -> dict[str, Any]:
+    return {f.name: getattr(instance, f.name) for f in fields(instance)}
+
+
+def _record_with_id(record: FetchRecord, fetch_id: str) -> FetchRecord:
+    """The stored form of ``record``: the same fetch, now carrying its id."""
+    return FetchRecord(**{**_field_values(record), "id": fetch_id})
+
+
+def _outcome_with(outcome: "FetchOutcome", **changes: Any) -> "FetchOutcome":
+    """A copy of ``outcome`` with ``changes`` applied (it is frozen)."""
+    return FetchOutcome(**{**_field_values(outcome), **changes})
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,7 +631,7 @@ class Scheduler:
 
         record = _build_record(provider.id, spec, requested_at, result, failure)
         fetch_id = self._store.save_fetch(record)
-        stored: FetchRecord = replace(record, id=fetch_id)
+        stored = _record_with_id(record, fetch_id)
 
         outcome = FetchOutcome(
             provider=provider.id,
@@ -665,8 +679,7 @@ class Scheduler:
             if not readings:
                 return outcome
             ids = self._store.save_readings(stored.id, readings)
-            counted: FetchOutcome = replace(outcome, reading_count=len(ids))
-            return counted
+            return _outcome_with(outcome, reading_count=len(ids))
         except Exception as exc:
             self._log.warning(
                 "normalize failed for %s/%s (raw record %s kept): %s",
@@ -675,8 +688,7 @@ class Scheduler:
                 stored.id,
                 exc,
             )
-            failed: FetchOutcome = replace(outcome, normalize_error=f"{type(exc).__name__}: {exc}")
-            return failed
+            return _outcome_with(outcome, normalize_error=f"{type(exc).__name__}: {exc}")
 
     def _conditional(
         self,

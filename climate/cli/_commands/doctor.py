@@ -13,7 +13,7 @@ Two independent check groups, both in the rubric-shaped contract
   tracker version), provider credentials, host disk headroom and the newest
   backup's age. Every external interaction (subprocess, HTTP, environment,
   wall clock, ``PATH`` lookup) goes through an injectable seam
-  (:func:`_weather_checks`'s ``run``/``fetch``/``env``/``now``/``which``/
+  (:func:`_weather_checks`'s ``run``/``fetch``/``env``/``which``/
   ``disk_usage`` keywords) so tests never touch docker, a socket or the real
   disk. Every individual check is wrapped so an unexpected exception becomes
   a failed check naming the exception class, never a traceback.
@@ -39,7 +39,6 @@ import json
 import os
 import shutil
 import subprocess  # nosec B404 - used with a fixed argv, never shell=True
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -329,57 +328,62 @@ def _check_fetch_ages(
         ]
 
     providers_by_id = {p.id: p for p in weather_providers.iter_providers()}
-    checks: list[Check] = []
-    for entry in health.get("providers") or []:
-        provider_id = entry.get("provider", "?")
-        provider = providers_by_id.get(provider_id)
-        availability = None
-        if provider is not None:
-            try:
-                availability = _provider_availability(provider, weather_cfg, env)
-            except Exception:  # noqa: BLE001 - a check must never raise
-                availability = None
+    return [
+        _fetch_age_check(entry, providers_by_id, weather_cfg, env)
+        for entry in health.get("providers") or []
+    ]
 
-        # The API's own ``enabled`` comes from the tracker (the only process
-        # holding the credentials), so it overrules this host shell's guess:
-        # a provider that is collecting is never reported as "disabled here".
-        if (
-            availability is not None
-            and not availability.enabled
-            and entry.get("enabled") is not True
-        ):
-            message = f"{provider_id}: disabled ({availability.reason}); no fetch expected"
-            checks.append(
-                {
-                    "id": f"weather_fetch_age_{provider_id}",
-                    "passed": True,
-                    "severity": "info",
-                    "message": message,
-                    "remediation": "",
-                }
-            )
-            continue
 
-        def _check_fetch_age(entry: dict[str, Any] = entry) -> tuple[bool, str, str | None]:
-            age = entry.get("newest_fetch_age_seconds")
-            stale = bool(entry.get("stale"))
-            provider_id = entry.get("provider", "?")
-            if age is None:
-                return False, f"{provider_id}: no fetch recorded yet", None
-            if stale:
-                return False, f"{provider_id}: newest fetch age {age}s (stale)", None
-            return True, f"{provider_id}: newest fetch age {age}s", None
+def _host_availability(
+    provider: Any,
+    weather_cfg: weather_config.WeatherConfig,
+    env: Mapping[str, str],
+) -> Any:
+    """This host's view of a provider's availability, or ``None`` if it cannot be told."""
+    if provider is None:
+        return None
+    try:
+        return _provider_availability(provider, weather_cfg, env)
+    except Exception:  # noqa: BLE001 - a check must never raise
+        return None
 
-        checks.append(
-            _safe_check(
-                f"weather_fetch_age_{provider_id}",
-                "warning",
-                _STACK_STATUS_HINT,
-                _check_fetch_age,
-            )
-        )
 
-    return checks
+def _fetch_age_outcome(entry: dict[str, Any]) -> tuple[bool, str, str | None]:
+    age = entry.get("newest_fetch_age_seconds")
+    provider_id = entry.get("provider", "?")
+    if age is None:
+        return False, f"{provider_id}: no fetch recorded yet", None
+    if entry.get("stale"):
+        return False, f"{provider_id}: newest fetch age {age}s (stale)", None
+    return True, f"{provider_id}: newest fetch age {age}s", None
+
+
+def _fetch_age_check(
+    entry: dict[str, Any],
+    providers_by_id: Mapping[str, Any],
+    weather_cfg: weather_config.WeatherConfig,
+    env: Mapping[str, str],
+) -> Check:
+    provider_id = entry.get("provider", "?")
+    availability = _host_availability(providers_by_id.get(provider_id), weather_cfg, env)
+    # The API's own ``enabled`` comes from the tracker (the only process
+    # holding the credentials), so it overrules this host shell's guess: a
+    # provider that is collecting is never reported as "disabled here".
+    disabled_here = availability is not None and not availability.enabled
+    if disabled_here and entry.get("enabled") is not True:
+        return {
+            "id": f"weather_fetch_age_{provider_id}",
+            "passed": True,
+            "severity": "info",
+            "message": f"{provider_id}: disabled ({availability.reason}); no fetch expected",
+            "remediation": "",
+        }
+    return _safe_check(
+        f"weather_fetch_age_{provider_id}",
+        "warning",
+        _STACK_STATUS_HINT,
+        lambda: _fetch_age_outcome(entry),
+    )
 
 
 def _fetch_provider_rows(
@@ -589,7 +593,6 @@ def _weather_checks(
     run: Callable[..., Any] = subprocess.run,
     fetch: Callable[..., Any] | None = None,
     env: Mapping[str, str] = os.environ,
-    now: datetime | None = None,
     which: Callable[[str], str | None] = shutil.which,
     disk_usage: Callable[[Path], Any] = shutil.disk_usage,
 ) -> list[Check]:
@@ -607,7 +610,6 @@ def _weather_checks(
       ``climate.cli._commands.weather.fetch`` instead.
     * ``env`` — the environment mapping (base URL override, backup-age
       threshold, provider credentials). Defaults to ``os.environ``.
-    * ``now`` — the wall clock instant.
     * ``which`` — the ``PATH`` lookup used for "is docker installed".
     * ``disk_usage`` — ``shutil.disk_usage``-shaped callable for the host
       disk headroom check.
@@ -621,8 +623,6 @@ def _weather_checks(
     """
     if fetch is None:
         fetch = weather.fetch
-    if now is None:
-        now = datetime.now(UTC)
 
     compose = stack.find_compose()
     if compose is None:
