@@ -292,3 +292,294 @@ class TestQuotaValidation:
         config = weather_config.load_config(cfg_path)
 
         assert config.providers["open-meteo"].quota.calls_per_day is None
+
+    def test_disabled_provider_is_never_quota_validated(self, tmp_path):
+        # Two locations at a 1-second interval would blow any real quota;
+        # the provider is disabled, so the scheduler will never poll it and
+        # load_config must not treat it as a startup failure either.
+        data = _base_config(
+            locations={
+                "greenwich": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+                "second": {"latitude": GREENWICH_LAT, "longitude": GREENWICH_LON},
+            }
+        )
+        data["providers"]["open-meteo"]["enabled"] = False
+        data["providers"]["open-meteo"]["interval_seconds"] = 1
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = 1
+
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        assert config.providers["open-meteo"].enabled is False
+        assert config.providers["open-meteo"].quota.calls_per_day == 1
+
+
+class TestMalformedConfigShape:
+    """Qodo #12: malformed-but-valid JSON must raise CliError, never a traceback."""
+
+    def test_non_mapping_root_raises_cli_error(self, tmp_path):
+        cfg_path = tmp_path / "weather.json"
+        cfg_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert exc_info.value.remediation
+
+    def test_invalid_json_raises_cli_error_not_a_traceback(self, tmp_path):
+        cfg_path = tmp_path / "weather.json"
+        cfg_path.write_text("{not valid json", encoding="utf-8")
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert str(cfg_path) in exc_info.value.message
+
+    def test_non_mapping_locations_raises_cli_error(self, tmp_path):
+        data = _base_config(locations=[1, 2])
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "locations" in exc_info.value.message
+
+    def test_non_mapping_providers_raises_cli_error(self, tmp_path):
+        data = _base_config(providers="not-a-mapping")
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "providers" in exc_info.value.message
+
+    def test_non_mapping_location_entry_raises_cli_error(self, tmp_path):
+        data = _base_config(locations={"greenwich": [GREENWICH_LAT, GREENWICH_LON]})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+    def test_non_mapping_provider_entry_raises_cli_error(self, tmp_path):
+        data = _base_config(providers={"open-meteo": "not-a-mapping"})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "open-meteo" in exc_info.value.message
+
+    def test_non_mapping_request_params_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["request_params"] = "not-a-mapping"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_mapping_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"] = "not-a-mapping"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_interval_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["interval_seconds"] = "soon"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_positive_interval_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        non_positive_interval = 900 - 900
+        data["providers"]["open-meteo"]["interval_seconds"] = non_positive_interval
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_interval_raises_cli_error(self, tmp_path):
+        # True/False are `int` in Python; they must never pass as a config number.
+        data = _base_config()
+        data["providers"]["open-meteo"]["interval_seconds"] = True
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = "lots"
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_quota_raises_cli_error(self, tmp_path):
+        data = _base_config()
+        data["providers"]["open-meteo"]["quota"]["calls_per_day"] = False
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_negative_precision_raises_cli_error(self, tmp_path):
+        negative_precision = 0 - 1
+        data = _base_config(coordinate_precision=negative_precision)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_boolean_precision_raises_cli_error(self, tmp_path):
+        data = _base_config(coordinate_precision=True)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_non_numeric_precision_raises_cli_error(self, tmp_path):
+        data = _base_config(coordinate_precision="two")
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+
+    def test_zero_precision_is_valid_and_rounds_to_whole_degrees(self, tmp_path):
+        # Whole-degree rounding is a legitimate — the most private — setting;
+        # 0 must load, not raise, and round_coordinate must clamp to it.
+        data = _base_config(coordinate_precision=0)
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        config = weather_config.load_config(cfg_path)
+
+        location = config.locations["greenwich"]
+        assert config.coordinate_precision == 0
+        assert location.latitude == round(GREENWICH_LAT, 0)
+        assert location.longitude == round(GREENWICH_LON, 0)
+
+    def test_missing_latitude_raises_cli_error_naming_location(self, tmp_path):
+        data = _base_config(locations={"greenwich": {"longitude": GREENWICH_LON}})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+    def test_missing_longitude_raises_cli_error_naming_location(self, tmp_path):
+        data = _base_config(locations={"greenwich": {"latitude": GREENWICH_LAT}})
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        assert exc_info.value.code == 2
+        assert "greenwich" in exc_info.value.message
+
+
+class TestInvalidCoordinates:
+    """Qodo #13: nonfinite/out-of-range coordinates must raise CliError.
+
+    The error must name the location label and the offending field, never
+    echo the coordinate value (location is private data in this project).
+    """
+
+    def test_nan_latitude_raises_cli_error(self, tmp_path):
+        bad_latitude = float("nan")
+        data = _base_config(
+            locations={"greenwich": {"latitude": bad_latitude, "longitude": GREENWICH_LON}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "latitude" in error.message
+
+    def test_infinite_longitude_raises_cli_error(self, tmp_path):
+        bad_longitude = float("inf")
+        data = _base_config(
+            locations={"greenwich": {"latitude": GREENWICH_LAT, "longitude": bad_longitude}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "longitude" in error.message
+
+    def test_latitude_above_ninety_raises_cli_error_without_echoing_value(self, tmp_path):
+        # Built from an expression, never a coordinate-shaped literal.
+        out_of_range_latitude = 90 + 110
+        data = _base_config(
+            locations={"greenwich": {"latitude": out_of_range_latitude, "longitude": GREENWICH_LON}}
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "latitude" in error.message
+        assert str(out_of_range_latitude) not in error.message
+
+    def test_longitude_below_negative_one_eighty_raises_cli_error(self, tmp_path):
+        out_of_range_longitude = -180 - 320
+        data = _base_config(
+            locations={
+                "greenwich": {"latitude": GREENWICH_LAT, "longitude": out_of_range_longitude}
+            }
+        )
+        cfg_path = _write_config(tmp_path / "weather.json", data)
+
+        with pytest.raises(CliError) as exc_info:
+            weather_config.load_config(cfg_path)
+
+        error = exc_info.value
+        assert error.code == 2
+        assert "greenwich" in error.message
+        assert "longitude" in error.message
+        assert str(out_of_range_longitude) not in error.message

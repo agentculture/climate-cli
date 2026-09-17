@@ -19,11 +19,16 @@ silently watching some hard-coded place.
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from climate.cli._errors import EXIT_ENV_ERROR, CliError
+
+# Geographic bounds a coordinate must fall within to be usable.
+_MIN_LATITUDE, _MAX_LATITUDE = -90.0, 90.0
+_MIN_LONGITUDE, _MAX_LONGITUDE = -180.0, 180.0
 
 # Overrides the resolved config file path. Set by tests and by anyone who
 # keeps their config somewhere other than the XDG default.
@@ -117,11 +122,17 @@ _FALLBACK_INTERVAL_SECONDS = 300
 
 
 def _validate_quota(locations: dict[str, Location], providers: dict[str, ProviderSettings]) -> None:
-    """Reject a configuration whose demand outruns any provider's quota."""
+    """Reject a configuration whose demand outruns any *enabled* provider's quota.
+
+    A disabled provider is never polled, so its quota is irrelevant here —
+    the scheduler already treats "disabled" as always valid.
+    """
     location_count = len(locations)
     if location_count == 0:
         return
     for provider_id, settings in providers.items():
+        if not settings.enabled:
+            continue
         quota = settings.quota
         if quota.calls_per_day is None:
             continue
@@ -146,25 +157,163 @@ def _validate_quota(locations: dict[str, Location], providers: dict[str, Provide
             )
 
 
-def _parse_location(label: str, raw: dict, precision: int) -> Location:
+def _config_error(message: str, remediation: str) -> CliError:
+    """Build the one shape every malformed-config problem raises."""
+    return CliError(code=EXIT_ENV_ERROR, message=message, remediation=remediation)
+
+
+def _require_mapping(value: object, path_hint: str) -> dict:
+    """Require ``value`` to be a JSON object, naming the offending config path."""
+    if not isinstance(value, dict):
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a JSON object",
+            remediation=f"fix '{path_hint}' in the weather config file to be a JSON object",
+        )
+    return value
+
+
+def _whole_number(value: object, path_hint: str) -> int:
+    """Coerce to a whole number, never a bare traceback.
+
+    Rejects booleans (``True``/``False`` are ``int`` in Python but never a
+    valid config number), non-numeric types, and floats/strings with a
+    fractional part (``2.5`` is not a whole number).
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
+        )
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
+        ) from None
+    if not number.is_integer():
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a whole number",
+            remediation=f"set '{path_hint}' to a whole number",
+        )
+    return int(number)
+
+
+def _positive_int(value: object, path_hint: str) -> int:
+    """Require ``value`` to convert to a strictly positive whole number."""
+    number = _whole_number(value, path_hint)
+    if number <= 0:
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a positive whole number",
+            remediation=f"set '{path_hint}' to a positive whole number",
+        )
+    return number
+
+
+def _non_negative_int(value: object, path_hint: str) -> int:
+    """Require ``value`` to convert to zero or a positive whole number."""
+    number = _whole_number(value, path_hint)
+    if number < 0:
+        raise _config_error(
+            message=f"weather config '{path_hint}' must be a non-negative whole number",
+            remediation=f"set '{path_hint}' to zero or a positive whole number",
+        )
+    return number
+
+
+def _finite_coordinate(value: object, label: str, field_name: str) -> float:
+    """Coerce a location field to a finite float; never echo the value itself."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise _config_error(
+            message=f"location '{label}': '{field_name}' must be a finite number",
+            remediation=f"set a finite numeric '{field_name}' for location '{label}'",
+        )
+    number = float(value)
+    if not math.isfinite(number):
+        raise _config_error(
+            message=f"location '{label}': '{field_name}' must be a finite number",
+            remediation=f"set a finite numeric '{field_name}' for location '{label}'",
+        )
+    return number
+
+
+def _validate_coordinate_range(
+    value: float, label: str, field_name: str, low: float, high: float
+) -> None:
+    """Reject a geographically impossible coordinate, naming the field, never the value."""
+    if not low <= value <= high:
+        raise _config_error(
+            message=f"location '{label}': '{field_name}' is outside its valid range",
+            remediation=(
+                f"set '{field_name}' for location '{label}' within its valid geographic range"
+            ),
+        )
+
+
+def _parse_location(label: str, raw: object, precision: int) -> Location:
+    raw = _require_mapping(raw, f"locations.{label}")
+    missing = [field_name for field_name in ("latitude", "longitude") if field_name not in raw]
+    if missing:
+        raise _config_error(
+            message=f"location '{label}' is missing {' and '.join(missing)}",
+            remediation=f"add {' and '.join(missing)} for location '{label}'",
+        )
+
+    latitude = _finite_coordinate(raw["latitude"], label, "latitude")
+    longitude = _finite_coordinate(raw["longitude"], label, "longitude")
+    _validate_coordinate_range(latitude, label, "latitude", _MIN_LATITUDE, _MAX_LATITUDE)
+    _validate_coordinate_range(longitude, label, "longitude", _MIN_LONGITUDE, _MAX_LONGITUDE)
+
     return Location(
         label=label,
-        latitude=round_coordinate(raw["latitude"], precision),
-        longitude=round_coordinate(raw["longitude"], precision),
+        latitude=round_coordinate(latitude, precision),
+        longitude=round_coordinate(longitude, precision),
     )
 
 
-def _parse_provider(provider_id: str, raw: dict) -> ProviderSettings:
-    quota_raw = raw.get("quota") or {}
+def _parse_quota(raw: dict, provider_id: str) -> Quota:
+    quota_raw = raw.get("quota")
+    if quota_raw is None:
+        return Quota()
+    quota_raw = _require_mapping(quota_raw, f"providers.{provider_id}.quota")
+    calls_per_day = quota_raw.get("calls_per_day")
+    if calls_per_day is None:
+        return Quota()
+    return Quota(
+        calls_per_day=_positive_int(calls_per_day, f"providers.{provider_id}.quota.calls_per_day")
+    )
+
+
+def _parse_provider(provider_id: str, raw: object) -> ProviderSettings:
+    raw = _require_mapping(raw, f"providers.{provider_id}")
+    interval_raw = raw.get("interval_seconds")
+    request_params = raw.get("request_params") or {}
+    request_params = _require_mapping(request_params, f"providers.{provider_id}.request_params")
     return ProviderSettings(
         provider_id=provider_id,
         enabled=bool(raw.get("enabled", True)),
         interval_seconds=(
-            int(raw["interval_seconds"]) if raw.get("interval_seconds") is not None else None
+            _positive_int(interval_raw, f"providers.{provider_id}.interval_seconds")
+            if interval_raw is not None
+            else None
         ),
-        request_params=dict(raw.get("request_params") or {}),
-        quota=Quota(calls_per_day=quota_raw.get("calls_per_day")),
+        request_params=dict(request_params),
+        quota=_parse_quota(raw, provider_id),
     )
+
+
+def _read_raw_config(resolved: Path) -> dict:
+    """Read and JSON-decode the config file, never letting a decode error escape as-is."""
+    if not resolved.exists():
+        return {}
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise _config_error(
+            message=f"weather config at {resolved} is not valid JSON ({exc})",
+            remediation=f"fix the JSON syntax in {resolved}",
+        ) from None
+    return _require_mapping(raw, "<root>")
 
 
 def load_config(path: str | Path | None = None) -> WeatherConfig:
@@ -173,23 +322,27 @@ def load_config(path: str | Path | None = None) -> WeatherConfig:
     A missing file is treated as an empty configuration (no locations, no
     providers) rather than an error at this level — callers that require at
     least one location (the tracker) call :func:`ensure_locations_configured`
-    or :func:`load_tracker_config`.
+    or :func:`load_tracker_config`. Any malformed shape (wrong JSON type,
+    missing coordinate, non-numeric interval/quota/precision, an impossible
+    coordinate) becomes a :class:`CliError` naming the offending config path
+    rather than a traceback.
     """
     resolved = resolve_config_path(path)
-    if resolved.exists():
-        raw = json.loads(resolved.read_text(encoding="utf-8"))
-    else:
-        raw = {}
+    raw = _read_raw_config(resolved)
 
-    precision = int(raw.get("coordinate_precision", DEFAULT_COORDINATE_PRECISION))
+    precision_raw = raw.get("coordinate_precision", DEFAULT_COORDINATE_PRECISION)
+    precision = _non_negative_int(precision_raw, "coordinate_precision")
+
+    locations_raw = _require_mapping(raw.get("locations") or {}, "locations")
+    providers_raw = _require_mapping(raw.get("providers") or {}, "providers")
 
     locations = {
         label: _parse_location(label, loc_raw, precision)
-        for label, loc_raw in (raw.get("locations") or {}).items()
+        for label, loc_raw in locations_raw.items()
     }
     providers = {
         provider_id: _parse_provider(provider_id, provider_raw)
-        for provider_id, provider_raw in (raw.get("providers") or {}).items()
+        for provider_id, provider_raw in providers_raw.items()
     }
 
     _validate_quota(locations, providers)
