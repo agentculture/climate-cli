@@ -26,6 +26,7 @@ from climate.weather.mongo import (
     resolve_uri,
 )
 from climate.weather.store import Measurement
+from tests.weather.neutral import fake_secret
 from tests.weather.store_contract import StoreContractTests, make_fetch, make_reading
 
 # --- a hand-written fake of the pymongo collection API -----------------------
@@ -342,6 +343,61 @@ def test_body_wrapped_as_bson_binary_when_bson_is_importable(
     fetch_id = store.save_fetch(make_fetch())
     stored_document = fetches.documents[fetch_id]
     assert isinstance(stored_document["body"], FakeBinary)
+
+
+def test_heartbeat_round_trips_the_provider_availability_snapshot() -> None:
+    """The tracker's snapshot is what the web API and doctor read back."""
+    meta = FakeCollection()
+    store = MongoWeatherStore(FakeCollection(), FakeCollection(), meta=meta)
+    store.save_heartbeat(
+        "9.9.9",
+        datetime(2026, 9, 17, 9, 0, 0, tzinfo=UTC),
+        {"openweather": {"enabled": True, "reason": None, "credential_present": True}},
+    )
+    heartbeat = store.latest_heartbeat()
+    assert heartbeat is not None
+    assert heartbeat["providers"] == {
+        "openweather": {"enabled": True, "reason": None, "credential_present": True}
+    }
+
+
+def test_a_heartbeat_document_without_providers_still_loads() -> None:
+    """Backward compatible: a heartbeat written before the snapshot existed."""
+    meta = FakeCollection()
+    meta.insert_one(
+        {
+            "_id": weather_mongo.HEARTBEAT_DOC_ID,
+            "version": "0.1.0",
+            "at": datetime(2026, 9, 17, 9, 0, 0, tzinfo=UTC),
+        }
+    )
+    store = MongoWeatherStore(FakeCollection(), FakeCollection(), meta=meta)
+    heartbeat = store.latest_heartbeat()
+    assert heartbeat is not None
+    assert heartbeat["version"] == "0.1.0"
+    assert heartbeat["providers"] is None
+
+
+def test_a_heartbeat_document_never_carries_the_credential_value() -> None:
+    """Only the three documented keys are stored, whatever a caller passes."""
+    meta = FakeCollection()
+    store = MongoWeatherStore(FakeCollection(), FakeCollection(), meta=meta)
+    secret = fake_secret("openweather-key")
+    store.save_heartbeat(
+        "9.9.9",
+        datetime(2026, 9, 17, 9, 0, 0, tzinfo=UTC),
+        {
+            "openweather": {
+                "enabled": True,
+                "reason": None,
+                "credential_present": True,
+                "credential": secret,  # a caller must not be able to smuggle this in
+            }
+        },
+    )
+    stored = meta.documents[weather_mongo.HEARTBEAT_DOC_ID]
+    assert secret not in str(stored)
+    assert set(stored["providers"]["openweather"]) == {"enabled", "reason", "credential_present"}
 
 
 def test_requested_at_truncated_to_milliseconds_on_save() -> None:

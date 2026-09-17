@@ -78,9 +78,9 @@ def _counting_store(store: InMemoryWeatherStore) -> dict:
     counter = {"n": 0}
     original = store.save_heartbeat
 
-    def _save_heartbeat(version: str, at: Any) -> None:
+    def _save_heartbeat(version: str, at: Any, providers: Any = None) -> None:
         counter["n"] += 1
-        original(version, at)
+        original(version, at, providers)
 
     store.save_heartbeat = _save_heartbeat  # type: ignore[method-assign]
     return counter
@@ -119,7 +119,7 @@ class HeartbeatFailingStore(InMemoryWeatherStore):
     unwritable: the tracker must still hand the lease back.
     """
 
-    def save_heartbeat(self, version: str, at: Any) -> None:
+    def save_heartbeat(self, version: str, at: Any, providers: Any = None) -> None:
         raise RuntimeError("the store rejected the heartbeat")
 
 
@@ -208,6 +208,74 @@ def test_runs_a_tick_stores_a_heartbeat_on_start_and_after_every_tick(tmp_path):
     assert heartbeat["version"] == climate.__version__
     # The startup heartbeat plus (at least) the two ticks that stopped the run.
     assert counter["n"] >= 3
+
+
+def _recording_store(store: InMemoryWeatherStore) -> tuple[dict, list]:
+    """``(tick counter, [providers snapshot per heartbeat write])``."""
+    counter = _counting_store(store)
+    counting = store.save_heartbeat
+    writes: list = []
+
+    def _save_heartbeat(version: str, at: Any, providers: Any = None) -> None:
+        writes.append(providers)
+        counting(version, at, providers)
+
+    store.save_heartbeat = _save_heartbeat  # type: ignore[method-assign]
+    return counter, writes
+
+
+def test_every_heartbeat_publishes_the_provider_availability_snapshot(tmp_path):
+    """The tracker is the only process that sees the credentials, so the
+    availability it computes is written on start and on every tick — the web
+    API and doctor have nothing else honest to read."""
+    _write_config(tmp_path / "weather.json")
+    store = InMemoryWeatherStore()
+    counter, writes = _recording_store(store)
+
+    code = tracker.main(
+        store_factory=lambda: store,
+        lease_collection_factory=lambda: FakeCollection(),
+        fetch=FakeFetch(),
+        stop=StopAfterTicks(counter, 2),
+    )
+
+    assert code == EXIT_SUCCESS
+    # the startup write plus one per tick, each carrying the snapshot
+    assert len(writes) >= 3
+    assert all(snapshot and _TARGET_PROVIDER in snapshot for snapshot in writes)
+
+    snapshot = store.latest_heartbeat()["providers"]
+    assert snapshot[_TARGET_PROVIDER]["enabled"] is True
+    assert snapshot[_TARGET_PROVIDER]["credential_present"] is None  # keyless provider
+    assert snapshot["openweather"] == {
+        "enabled": False,
+        "reason": "disabled in configuration",
+        "credential_present": False,
+    }
+
+
+def test_the_heartbeat_snapshot_never_carries_the_credential_value(tmp_path, monkeypatch):
+    """``credential_present`` is a boolean: never the key, never its length."""
+    monkeypatch.setenv("CLIMATE_OPENWEATHER_API_KEY", FAKE_OPENWEATHER_KEY)
+    _write_config(tmp_path / "weather.json", enabled="openweather")
+    store = InMemoryWeatherStore()
+    counter, _ = _recording_store(store)
+
+    code = tracker.main(
+        store_factory=lambda: store,
+        lease_collection_factory=lambda: FakeCollection(),
+        fetch=FakeFetch(),
+        stop=StopAfterTicks(counter, 1),
+    )
+
+    assert code == EXIT_SUCCESS
+    heartbeat = store.latest_heartbeat()
+    assert heartbeat["providers"]["openweather"] == {
+        "enabled": True,
+        "reason": None,
+        "credential_present": True,
+    }
+    assert FAKE_OPENWEATHER_KEY not in json.dumps(heartbeat, default=str)
 
 
 def test_lease_is_released_when_the_run_finishes(tmp_path):

@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -79,6 +79,7 @@ from climate.weather.store import (
     Reading,
     SeriesPoint,
     UnknownFetchError,
+    heartbeat_provider_snapshot,
 )
 
 __all__ = [
@@ -362,13 +363,30 @@ class MongoWeatherStore:
 
     # --- optional service extensions (see InMemoryWeatherStore) -----------
 
-    def save_heartbeat(self, version: str, at: datetime) -> None:
-        """Upsert the single tracker-heartbeat document."""
+    def save_heartbeat(
+        self,
+        version: str,
+        at: datetime,
+        providers: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> None:
+        """Upsert the single tracker-heartbeat document.
+
+        ``providers`` is the tracker's per-provider availability snapshot,
+        sanitized by
+        :func:`climate.weather.store.heartbeat_provider_snapshot` so the
+        stored document can never carry a credential value.
+        """
         if self._meta is None:
             return
         self._meta.update_one(
             {"_id": HEARTBEAT_DOC_ID},
-            {"$set": {"version": version, "at": _truncate_to_millis(at)}},
+            {
+                "$set": {
+                    "version": version,
+                    "at": _truncate_to_millis(at),
+                    "providers": heartbeat_provider_snapshot(providers),
+                }
+            },
             upsert=True,
         )
 
@@ -378,7 +396,13 @@ class MongoWeatherStore:
         document = self._meta.find_one({"_id": HEARTBEAT_DOC_ID})
         if not document:
             return None
-        return {"version": document.get("version"), "at": document.get("at")}
+        # ``providers`` is absent from every document written before the
+        # availability snapshot existed, and reads back as ``None``.
+        return {
+            "version": document.get("version"),
+            "at": document.get("at"),
+            "providers": document.get("providers"),
+        }
 
     def size_bytes(self) -> int | None:
         """Database size on disk from ``dbstats``; ``None`` when unavailable."""

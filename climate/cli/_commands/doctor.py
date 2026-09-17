@@ -65,6 +65,11 @@ _DOCKER_INSTALL_HINT = (
     "install Docker and ensure 'docker compose' works (https://docs.docker.com/get-docker/)"
 )
 
+#: Where the tracker actually reads its provider credentials from: compose
+#: hands this file to the ``weather-tracker`` service alone, so a credential
+#: is expected to be absent from both this host shell and the web container.
+_WEATHER_ENV_FILE = stack._ENV_FILE_REL
+
 _DISK_MIN_BYTES_ENV = "CLIMATE_WEATHER_DISK_MIN_GIB"
 _DEFAULT_DISK_MIN_GIB = 10
 _DOCKER_DATA_ROOT = Path("/var/lib/docker")
@@ -335,7 +340,14 @@ def _check_fetch_ages(
             except Exception:  # noqa: BLE001 - a check must never raise
                 availability = None
 
-        if availability is not None and not availability.enabled:
+        # The API's own ``enabled`` comes from the tracker (the only process
+        # holding the credentials), so it overrules this host shell's guess:
+        # a provider that is collecting is never reported as "disabled here".
+        if (
+            availability is not None
+            and not availability.enabled
+            and entry.get("enabled") is not True
+        ):
             message = f"{provider_id}: disabled ({availability.reason}); no fetch expected"
             checks.append(
                 {
@@ -370,56 +382,138 @@ def _check_fetch_ages(
     return checks
 
 
+def _fetch_provider_rows(
+    fetch: Callable[..., Any], base_url: str
+) -> dict[str, dict[str, Any]] | None:
+    """``GET /providers`` as ``{provider_id: row}``, or ``None`` when unavailable.
+
+    This is the tracker's own answer about each provider (the API reports what
+    the tracker published in its heartbeat), which is the only honest source
+    for "is this credential present": the tracker reads it from
+    ``docker/weather.env`` inside its container, never from this shell.
+    """
+    try:
+        payload, _ = _fetch_json(fetch, base_url, "/providers")
+    except Exception:  # noqa: BLE001 - a check must never raise
+        return None
+    rows = (payload or {}).get("providers")
+    if not isinstance(rows, list):
+        return None
+    return {
+        str(row["provider"]): row
+        for row in rows
+        if isinstance(row, dict) and row.get("provider") is not None
+    }
+
+
+def _credential_check_from_api(provider: Any, row: Mapping[str, Any]) -> Check | None:
+    """The credential check for one provider, from the API's (tracker's) row."""
+    env_var = provider.auth.env_var
+    reason = row.get("enabled_reason") or ""
+    if not row.get("enabled") and "disabled in configuration" in reason:
+        return None  # explicit user choice, not a credential problem
+    if not row.get("auth_required", True):
+        return None  # the tracker says this provider needs no credential
+    passed = bool(row.get("credential_present"))
+    if passed:
+        message = f"{provider.id}: {env_var} is set in the tracker"
+    else:
+        message = (
+            f"{provider.id}: {env_var} is not set in the tracker " "(provider disabled until it is)"
+        )
+    return {
+        "id": f"weather_provider_credentials_{provider.id}",
+        "passed": passed,
+        "severity": "warning",
+        "message": message,
+        "remediation": ("" if passed else f"add {env_var} to {_WEATHER_ENV_FILE}"),
+    }
+
+
+def _credential_check_from_host(
+    provider: Any,
+    weather_cfg: weather_config.WeatherConfig,
+    env: Mapping[str, str],
+    *,
+    api_reachable: bool,
+) -> Check | None:
+    """The honest fallback when the API cannot be asked.
+
+    The host shell is *not* where the tracker reads its key from — the key
+    lives in the gitignored ``docker/weather.env``, which only the tracker
+    container is given — so this reports the state as unknown from here
+    rather than claiming a missing credential. Severity ``info``: an
+    unanswerable question is not a failure.
+    """
+    env_var = provider.auth.env_var
+    try:
+        settings = weather_cfg.providers.get(provider.id)
+    except Exception:  # noqa: BLE001 - a check must never raise
+        settings = None
+    if settings is not None and not getattr(settings, "enabled", True):
+        return None  # explicit user choice, not a credential problem
+    in_host_shell = "set" if env.get(env_var) else "not set"
+    why = (
+        "the weather API is unreachable"
+        if api_reachable is False
+        else "the weather API reported no such provider"
+    )
+    return {
+        "id": f"weather_provider_credentials_{provider.id}",
+        "passed": True,
+        "severity": "info",
+        "message": (
+            f"{provider.id}: cannot tell whether {env_var} is set — {why}, and the "
+            f"tracker reads it from {_WEATHER_ENV_FILE}, not from this shell "
+            f"(where it is {in_host_shell})"
+        ),
+        "remediation": (
+            f"start the stack and re-run doctor; set {env_var} in {_WEATHER_ENV_FILE} "
+            f"to enable {provider.id}"
+        ),
+    }
+
+
 def _check_provider_credentials(
-    weather_cfg: weather_config.WeatherConfig, env: Mapping[str, str]
+    weather_cfg: weather_config.WeatherConfig,
+    env: Mapping[str, str],
+    provider_rows: Mapping[str, Mapping[str, Any]] | None,
 ) -> list[Check]:
     """``weather_provider_credentials_<id>`` — one check per credentialed provider.
 
-    Never reports a value, only whether the env var is set.
+    Never reports a value, only whether the credential is set — and asks the
+    process that actually holds it: ``provider_rows`` is
+    ``GET /api/v1/providers``, whose ``credential_present`` comes from the
+    tracker's heartbeat. Only when that is unavailable does this fall back to
+    the host environment, and it then says so instead of pretending the host
+    shell is authoritative.
     """
     checks: list[Check] = []
     for provider in weather_providers.iter_providers():
         if not provider.auth.required or not provider.auth.env_var:
             continue
-
+        row = (provider_rows or {}).get(provider.id)
         try:
-            availability = _provider_availability(provider, weather_cfg, env)
+            check = (
+                _credential_check_from_api(provider, row)
+                if row is not None
+                else _credential_check_from_host(
+                    provider, weather_cfg, env, api_reachable=provider_rows is not None
+                )
+            )
         except Exception as exc:  # noqa: BLE001 - a check must never raise
-            checks.append(
-                {
-                    "id": f"weather_provider_credentials_{provider.id}",
-                    "passed": False,
-                    "severity": "warning",
-                    "message": (
-                        f"weather_provider_credentials_{provider.id} check raised "
-                        f"{type(exc).__name__}: {exc}"
-                    ),
-                    "remediation": f"set {provider.auth.env_var} to enable {provider.id}",
-                }
-            )
-            continue
-
-        if not availability.enabled and "disabled in configuration" in (availability.reason or ""):
-            continue  # explicit user choice, not a credential problem — no check to report
-
-        if availability.enabled:
-            passed, message = True, f"{provider.id}: {provider.auth.env_var} is set"
-        else:
-            passed, message = False, (
-                f"{provider.id}: {provider.auth.env_var} is not set "
-                "(provider disabled until it is)"
-            )
-        checks.append(
-            {
+            check = {
                 "id": f"weather_provider_credentials_{provider.id}",
-                "passed": passed,
+                "passed": False,
                 "severity": "warning",
-                "message": message,
-                "remediation": (
-                    "" if passed else f"set {provider.auth.env_var} to enable {provider.id}"
+                "message": (
+                    f"weather_provider_credentials_{provider.id} check raised "
+                    f"{type(exc).__name__}: {exc}"
                 ),
+                "remediation": f"add {provider.auth.env_var} to {_WEATHER_ENV_FILE}",
             }
-        )
+        if check is not None:
+            checks.append(check)
     return checks
 
 
@@ -553,8 +647,11 @@ def _weather_checks(
     api_check, health = _check_web_api_reachable(fetch, base_url)
     checks.append(api_check)
 
+    # Only worth a second request when the API answered the first one.
+    provider_rows = _fetch_provider_rows(fetch, base_url) if health is not None else None
+
     checks.extend(_check_fetch_ages(health, weather_cfg, env))
-    checks.extend(_check_provider_credentials(weather_cfg, env))
+    checks.extend(_check_provider_credentials(weather_cfg, env, provider_rows))
     checks.append(_check_database_size(health))
     checks.append(_check_disk_headroom(env, disk_usage))
     checks.append(_check_backup_age(env))
