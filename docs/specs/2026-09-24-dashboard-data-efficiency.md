@@ -21,8 +21,10 @@
 
 ## Requirements
 
-- The readings collection gets a compound index matching the range query (location, provider, kind, `observed_at`) so /series, /latest and /forecast read only the requested window instead of scanning the whole collection; query time stops growing with total history
-  - honesty: MongoWeatherStore.`__init__` creates the index idempotently (like the existing fetches index), so both tracker and web start safely on an existing volume, and a `store_contract`/mongo test pins the index spec
+- The readings collection gets a compound index matching the range query (location, provider, kind, `observed_at`), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)
+  - honesty: The tracker ensures the readings index idempotently at startup on the existing volume, and a test with a spec-recording FakeCollection pins the index spec
+- Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user
+  - honesty: A store opened in read-only mode never calls `create_index` (asserted with the FakeCollection in tests/weather/`test_mongo.py`)
 
 ## Honesty conditions
 
@@ -54,6 +56,7 @@
 
 - Wire payloads are already small and range-bounded (/series 6h ≈ 12 KB, 7d ≈ 87 KB, /forecast 48h ≈ 10 KB); the waste is server-side scanning and client re-fetching, not response size
 - Forecast rows dominate storage growth: open-meteo + met-no forecast readings are ~99% of the 172,882 readings after 7 days (~25k new readings/day), so the index matters more each week
+- The index bounds /series by window, but /forecast reads kind=forecast points with `observed_at` ≥ now from every stored forecast issue before picking the newest one, so it stays proportional to the number of overlapping stored issues
 
 ## Scope exploration
 
@@ -77,11 +80,25 @@
   - seeds: `c10`
 - `s10` — `user decision on the split (2026-09-24)`: The user split the climate.culture.dev scope into two specs; this frame carries the data-efficiency half. Answering the chunk-size question, the user pointed at the measured Mongo COLLSCAN and chose the index as the fix.
   - seeds: `c11`, `c2`
+- `s11` — `challenge pass / adjacent-systems lens: climate/weather/mongo.py:352-362 + web/__main__.py:53 + gh issue 8`: MongoWeatherStore.`__init__` calls `create_index` on both collections, and web/`__main__` builds the same store via mongo.`build_store`(). Issue #8 plans a read-only 'web' user; createIndex needs a write-level privilege, so putting the new index in `__init__` (as h2 proposes) would stop the web container starting once #8 lands.
+  - seeds: `c18`
+- `s12` — `challenge pass / unstated-assumptions lens: climate/weather/web/api.py _select_forecast_issue (store.series kind='forecast', since=now) + /forecast 48h = 0.83 s`: Every open-meteo (15 min) and met-no (30 min) fetch stores its own future horizon, so 'future points' spans many issues. The spec's success signal only measures /series, so /forecast might not improve and nobody would notice.
+  - seeds: `c19`
+- `s13` — `challenge pass / concurrency lens: tracker + web both constructing MongoWeatherStore at startup`: Clean for today's unauthenticated Mongo: identical concurrent createIndex calls are idempotent on the server. The residual concern is only the read-only-user case (G1).
+- `s14` — `challenge pass / reversibility + migration lens: mongo index build on the live 120 MB readings collection`: Reversible (dropIndex), no data rewrite. Backup/restore round-trips indexes via mongodump metadata, and the startup ensure-index re-creates it anyway. Not probed: build time on this volume (the assumption says 'seconds').
+- `s15` — `challenge pass / test-seam lens: tests/weather/test_mongo.py:137-144 FakeCollection.create_index`: The fake accepts any spec and returns a name, so 'a test pins the index spec' requires the fake to record the specs it was given — a small test-helper change, not a production one.
 
 ## Decisions
 
 - Index first: the MongoDB full-collection scan is the problem, so add the compound readings index (user, answering the chunk-size question: 'The issue you said was mongo - let's add index')
 
+## Hard questions
+
+- contradiction with c18? (resolved: User: resolve by the index-ownership change (c18) — the tracker ensures the index and the web store never calls `create_index`; h2's `__init__` placement is superseded)
+- Should the success signal also require /forecast 48h < 200 ms, or is reading only the newest issue (e.g. by `fetch_id` / `model_run_at`) a follow-up? (resolved: User: /forecast is a follow-up)
+
 ## Open parks
 
+- [unknown_nonblocking] No retention policy: readings grow ~25k/day (mostly forecast rows superseded by later issues) and the new index grows with them; pruning superseded forecast issues is unexamined
 - [follow_up] Follow-up spec after the index lands: client-side time-chunked loading with a cache and live-chunk-only polling (was c4), variable switch fetches only /series (c5), lazy /stats via IntersectionObserver (c6), /stats `bytes_stored` without loading raw bodies (c7) — findings s3–s6
+- [follow_up] Follow-up: make /forecast read only the newest stored issue (e.g. by `fetch_id` or `model_run_at`) instead of every overlapping issue's future points — measured 0.83 s for 48 h; see c19 and s12

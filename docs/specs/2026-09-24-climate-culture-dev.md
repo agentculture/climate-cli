@@ -25,12 +25,14 @@
   - honesty: A named tunnel exists in the culture.dev zone with remote-managed ingress climate.culture.dev → <http://127.0.0.1:8095>, and 'cultureflare remote-login show --hostname climate.culture.dev' reports it
 - A cloudflared-climate.service systemd user unit runs the tunnel with its token injected by 'grant run --inject `TUNNEL_TOKEN`=`CLIMATE_CULTURE_DEV_TUNNEL_TOKEN`', never a token file on disk
   - honesty: systemctl --user status cloudflared-climate.service is active; the unit's ExecStart uses 'grant run --inject' and no token file exists under ~/.config/cloudflared for climate
-- The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md base-URL section describe the tunnel path and the `CLIMATE_WEATHER_URL`=<https://climate.culture.dev> override for remote CLI/doctor use
-  - honesty: README no longer says 'do not put it on the public internet' without context; it documents the tunnel path and `CLIMATE_WEATHER_URL`=<https://climate.culture.dev>; docs/weather-api.md lists the public base URL
+- The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md describe the tunnel + Access SSO path and the public base URL, and state that remote CLI/doctor access needs an Access service token, which is not provisioned yet — agents and the CLI read locally for now
+  - honesty: README and docs/weather-api.md document climate.culture.dev behind Access SSO, drop the unqualified 'do not put it on the public internet' warning, and do not advertise `CLIMATE_WEATHER_URL`=<https://climate.culture.dev> for the CLI
 - The dashboard footer (#credits) lists every enabled provider with a non-empty licence; the IMS observation provider's licence, blank today, is filled in from IMS's terms of use
   - honesty: GET /api/v1/providers returns a non-empty attribution.licence for all 6 providers, and the footer renders each one
 - The edge cache rule is created with 'cultureflare cache-rule set' once agentculture/cultureflare#56 ships (the origin keeps sending Cache-Control: no-store, so the rule overrides the edge TTL); until then the tunnel + Access go live without the cache
   - honesty: The rule is recorded (rule id + TTLs) in a repo doc, and cf-cache-status: HIT appears on a repeated request
+- When the Access session expires mid-poll, the dashboard says 'signed out — reload to sign in' instead of 'The weather service is not answering'
+  - honesty: With the `CF_Authorization` cookie removed, the next poll shows the sign-in message, not the outage state
 
 ## Honesty conditions
 
@@ -45,6 +47,7 @@
 - No new cost: the Cloudflare tunnel and cache are on the existing free zone
 - Every check in the signal is run and passes before the spec is marked delivered
 - grep -r for the operator email across the repo, .devague and .eidetic finds nothing; 'cultureflare remote-login show --hostname climate.culture.dev' reports an Access app with one allow policy
+- The README's exposure section states that the tunnel ingress is pinned to 127.0.0.1:8095 and that changing `CLIMATE_WEB_PORT`/BIND means re-running 'cultureflare remote-login setup'
 
 ## Success signals
 
@@ -57,6 +60,7 @@
 - MongoDB is never exposed: it publishes no host port, and remote access goes through the read-only web API only
 - provenance.station must stay unpopulated (or be re-audited) while the dashboard is public — METAR/IMS station identifiers would reveal the tracked location
 - Provider secrets reach weather-tracker only: `CLIMATE_IMS_API_TOKEN` comes from the grant secret `IMS_API_TOKEN` into the gitignored docker/weather.env, and weather-web never receives it — which matters more once weather-web is public
+- The tunnel ingress is pinned to <http://127.0.0.1:8095> in Cloudflare, so changing `CLIMATE_WEB_PORT` or `CLIMATE_WEB_BIND` means re-running remote-login setup, or climate.culture.dev returns 502
 
 ## Non-goals
 
@@ -118,6 +122,16 @@
   - seeds: `c30`
 - `s25` — `agentculture/cultureflare#56 (filed 2026-09-24)`: Asked cultureflare for a cache-rule list/set/delete group on the `http_request_cache_settings` phase, mirroring cf-redirect-create.sh. The issue also asks them to confirm `override_origin` beats no-store, and that cached responses are only served after the Access check.
   - seeds: `c24`
+- `s26` — `challenge pass / unstated-assumptions lens: spec c9 vs c30/c32 + cultureflare remote-login show (service-token: not found)`: c9 asks the README to tell users to set `CLIMATE_WEATHER_URL`=<https://climate.culture.dev> for remote CLI/doctor use, but the host is SSO-gated with no service token (c32). Probe: unauthenticated GET /api/v1/health → 302 to agentculture.cloudflareaccess.com, so the CLI would fail. c9's doc text needs rewording.
+  - seeds: `c9`
+- `s27` — `challenge pass / failure-mode lens: climate/weather/web/static/js/api.js:60-71`: fetch() follows the 302 to the cross-origin Access login; that fails as a network TypeError, which api.js maps to ApiError('The weather service is not answering.', unreachable). An expired session (the Access default) therefore looks like an outage on a 60 s poll. Not probed with a real expired session.
+  - seeds: `c33`
+- `s28` — `challenge pass / security + adjacent-systems lens: gh issue 8 + culture-nodes/docs/operations/nodes-culture-dev.md:31-33`: Issue #8 (open) lists 'README: make exposure beyond loopback conditional on this being in place'. The nodes precedent honours the Access JWT at its loopback listener; climate web accepts any caller that reaches 127.0.0.1:8095. The spec never mentions either.
+  - seeds: `q8` (question, resolved)
+- `s29` — `challenge pass / operations lens: cultureflare remote-login show (ingress) + docker-compose.yml:111`: Ingress is remote-managed and hard-codes the port; the compose port is env-configurable. Nothing links the two.
+  - seeds: `c34`
+- `s30` — `challenge pass / lifecycle + reversibility lens: loginctl Linger=yes + ~/.config/systemd/user/cloudflared-climate.service`: Clean: linger is on, so the user unit starts at boot without a login; Restart=always. The token is injected by grant (no token file). Reversal = disable the unit + 'cultureflare remote-login teardown'. `CLIMATE_CLOUDFLARE_TUNNEL_ID` is stored non-hidden and unused by the token-mode connector (harmless).
+- `s31` — `operator hand-turn evidence (2026-09-24)`: User provisioned tunnel climate-culture-dev + CNAME + Access app + 1 allow policy; the agent installed cloudflared-climate.service (4 registered connections). Unauthenticated /api/v1/health and /api/v1/latest → 302 to the Access login; 8095 still listens on 127.0.0.1 only.
 
 ## Decisions
 
@@ -126,17 +140,22 @@
 - For now climate.culture.dev sits behind Cloudflare Access SSO: `cultureflare remote-login setup ... --allow <operator email>`. The allow-list email is operator configuration supplied at provisioning time, never written into the repo, this spec or the public memory store (supersedes the earlier public/--no-access decision c20)
 - Cache TTLs: /api/v1/\* 60 s at the edge (matching the dashboard's 60 s poll), /api/v1/health not cached, static assets 1 h
 - No Access service token for agents for now: agents read locally (127.0.0.1:8095 or the climate CLI's markdown output)
+- Cloudflare Access alone gates climate.culture.dev for now; issue #8 (Mongo auth + read-only web user) and Access-JWT validation at the origin stay follow-ups, not prerequisites
 
 ## Hard questions
 
 - Public or gated? --no-access (anyone can read, like lobes.culture.dev) or Cloudflare Access SSO with an --allow email policy (like nodes.culture.dev)? The web service has no auth of its own (README.md:273). (resolved: User: public for now → --no-access (see c20))
 - If public: is Cloudflare's edge enough protection, or do we need a rate-limit / cache rule? api.py has no throttling and sends Cache-Control: no-store on every JSON response. (resolved: User: add a Cloudflare cache rule (see c21))
+- contradiction with c32? (resolved: User confirmed the reword: docs say remote CLI access needs a service token (not provisioned); `CLIMATE_WEATHER_URL`=<https://climate.culture.dev> is not advertised)
 - Cache TTLs: static assets (/, /js, \*.css) for e.g. 1 hour and /api/v1/\* for 60 s (matching the dashboard's 60 s poll)? /health excluded from caching? (resolved: User confirmed: /api/v1/\* edge TTL 60 s (excluding /api/v1/health), static assets 1 h)
 - Do agents need remote HTTP read now (an Access service token via cultureflare, sealed in grant), or is local 127.0.0.1:8095 enough for them for now? (resolved: User: 'no need, or application/markdown seam for now' — no Access service token for agents now)
+- Issue #8 says to make exposure beyond loopback conditional on Mongo auth + a read-only web user, and nodes.culture.dev also validates Cf-Access-Jwt-Assertion at the origin. Is Access alone enough for now, or is #8 (and/or origin JWT validation) a prerequisite? (resolved: User: Access alone is enough for now; issue #8 (Mongo auth + read-only web user) and origin JWT validation are not prerequisites)
 
 ## Open parks
 
 - [unknown_nonblocking] Cache rule depends on agentculture/cultureflare#56 (cache-rule commands) — also confirms the rule respects Cloudflare Access and overrides origin no-store
+- [unknown_nonblocking] Tunnel health is invisible to climate-cli: 'climate doctor' / 'stack status' don't check cloudflared-climate.service or the public hostname; a dead connector is noticed only by a viewer (Restart=always mitigates)
+- [unknown_nonblocking] Residual after the challenge pass: not examined — Access session length/policy settings, the Cloudflare zone's WAF/bot settings, or an authenticated end-to-end browser check (needs the user's SSO login)
 - [out_of_scope] Data-efficiency claims c10–c18 moved to frame dashboard-data-efficiency when the user split the scope into two specs (2026-09-24)
 - [follow_up] An application/markdown seam for agents reading climate.culture.dev remotely (user's words: 'or application/markdown seam for now') — shape not yet defined
 

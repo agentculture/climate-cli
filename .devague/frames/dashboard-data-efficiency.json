@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T06:10:54Z",
-  "updated": "2026-09-24T06:30:38Z",
+  "updated": "2026-09-24T06:38:23Z",
   "claims": [
     {
       "id": "c1",
@@ -28,21 +28,41 @@
     {
       "id": "c2",
       "kind": "requirement",
-      "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at) so /series, /latest and /forecast read only the requested window instead of scanning the whole collection; query time stops growing with total history",
+      "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h2",
           "text": "MongoWeatherStore.__init__ creates the index idempotently (like the existing fetches index), so both tracker and web start safely on an existing volume, and a store_contract/mongo test pins the index spec",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h15",
+          "text": "The tracker ensures the readings index idempotently at startup on the existing volume, and a test with a spec-recording FakeCollection pins the index spec",
           "status": "confirmed",
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "contradiction with c18?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "User: resolve by the index-ownership change (c18) \u2014 the tracker ensures the index and the web store never calls create_index; h2's __init__ placement is superseded"
+        }
+      ],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at) so /series, /latest and /forecast read only the requested window instead of scanning the whole collection; query time stops growing with total history",
+          "kind": "requirement",
+          "reason": "lapse l1 (confirmed): /forecast is not bounded by this index"
+        }
+      ]
     },
     {
       "id": "c3",
@@ -308,6 +328,45 @@
       "links": [],
       "instruction": "docker exec weather-mongodb mongosh explain + curl -w %{time_total} against 127.0.0.1:8095",
       "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "A store opened in read-only mode never calls create_index (asserted with the FakeCollection in tests/weather/test_mongo.py)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "assumption",
+      "text": "The index bounds /series by window, but /forecast reads kind=forecast points with observed_at \u2265 now from every stored forecast issue before picking the newest one, so it stays proportional to the number of overlapping stored issues",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Should the success signal also require /forecast 48h < 200 ms, or is reading only the newest issue (e.g. by fetch_id / model_run_at) a follow-up?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: /forecast is a follow-up"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -316,6 +375,24 @@
       "text": "Follow-up spec after the index lands: client-side time-chunked loading with a cache and live-chunk-only polling (was c4), variable switch fetches only /series (c5), lazy /stats via IntersectionObserver (c6), /stats bytes_stored without loading raw bodies (c7) \u2014 findings s3\u2013s6",
       "kind": "follow_up",
       "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "No retention policy: readings grow ~25k/day (mostly forecast rows superseded by later issues) and the new index grows with them; pruning superseded forecast issues is unexamined",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Follow-up: make /forecast read only the newest stored issue (e.g. by fetch_id or model_run_at) instead of every overlapping issue's future points \u2014 measured 0.83 s for 48 h; see c19 and s12",
+      "kind": "follow_up",
+      "claim_id": "c19",
       "resolved": false,
       "resolution": "",
       "resolution_claim_id": null
@@ -402,8 +479,54 @@
         "c11",
         "c2"
       ]
+    },
+    {
+      "id": "s11",
+      "surface": "challenge pass / adjacent-systems lens: climate/weather/mongo.py:352-362 + web/__main__.py:53 + gh issue 8",
+      "finding": "MongoWeatherStore.__init__ calls create_index on both collections, and web/__main__ builds the same store via mongo.build_store(). Issue #8 plans a read-only 'web' user; createIndex needs a write-level privilege, so putting the new index in __init__ (as h2 proposes) would stop the web container starting once #8 lands.",
+      "seeds": [
+        "c18"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "challenge pass / unstated-assumptions lens: climate/weather/web/api.py _select_forecast_issue (store.series kind='forecast', since=now) + /forecast 48h = 0.83 s",
+      "finding": "Every open-meteo (15 min) and met-no (30 min) fetch stores its own future horizon, so 'future points' spans many issues. The spec's success signal only measures /series, so /forecast might not improve and nobody would notice.",
+      "seeds": [
+        "c19"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "challenge pass / concurrency lens: tracker + web both constructing MongoWeatherStore at startup",
+      "finding": "Clean for today's unauthenticated Mongo: identical concurrent createIndex calls are idempotent on the server. The residual concern is only the read-only-user case (G1).",
+      "seeds": []
+    },
+    {
+      "id": "s14",
+      "surface": "challenge pass / reversibility + migration lens: mongo index build on the live 120 MB readings collection",
+      "finding": "Reversible (dropIndex), no data rewrite. Backup/restore round-trips indexes via mongodump metadata, and the startup ensure-index re-creates it anyway. Not probed: build time on this volume (the assumption says 'seconds').",
+      "seeds": []
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / test-seam lens: tests/weather/test_mongo.py:137-144 FakeCollection.create_index",
+      "finding": "The fake accepts any spec and returns a name, so 'a test pins the index spec' requires the fake to record the specs it was given \u2014 a small test-helper change, not a production one.",
+      "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Claim c2 (confirmed) states the index makes /series, /latest and /forecast read only the requested window; /forecast was never traced \u2014 its query is kind=forecast, since=now across every stored issue, so the index does not bound it the way c2 says",
+      "skipped_check": "trace _select_forecast_issue's store call and time /forecast before writing c2",
+      "refs": [
+        "challenge pass / unstated-assumptions lens: api.py _select_forecast_issue"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    }
+  ],
   "obligations": []
 }

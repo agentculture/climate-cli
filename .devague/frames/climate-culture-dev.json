@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T06:00:01Z",
-  "updated": "2026-09-24T06:33:24Z",
+  "updated": "2026-09-24T06:38:35Z",
   "claims": [
     {
       "id": "c1",
@@ -162,21 +162,41 @@
     {
       "id": "c9",
       "kind": "requirement",
-      "text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md base-URL section describe the tunnel path and the CLIMATE_WEATHER_URL=https://climate.culture.dev override for remote CLI/doctor use",
+      "text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md describe the tunnel + Access SSO path and the public base URL, and state that remote CLI/doctor access needs an Access service token, which is not provisioned yet \u2014 agents and the CLI read locally for now",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
         {
           "id": "h7",
           "text": "README no longer says 'do not put it on the public internet' without context; it documents the tunnel path and CLIMATE_WEATHER_URL=https://climate.culture.dev; docs/weather-api.md lists the public base URL",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h19",
+          "text": "README and docs/weather-api.md document climate.culture.dev behind Access SSO, drop the unqualified 'do not put it on the public internet' warning, and do not advertise CLIMATE_WEATHER_URL=https://climate.culture.dev for the CLI",
           "status": "confirmed",
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q7",
+          "text": "contradiction with c32?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "User confirmed the reword: docs say remote CLI access needs a service token (not provisioned); CLIMATE_WEATHER_URL=https://climate.culture.dev is not advertised"
+        }
+      ],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md base-URL section describe the tunnel path and the CLIMATE_WEATHER_URL=https://climate.culture.dev override for remote CLI/doctor use",
+          "kind": "requirement",
+          "reason": "challenge q7: CLIMATE_WEATHER_URL alone gets the SSO 302 (user confirmed the reword)"
+        }
+      ]
     },
     {
       "id": "c10",
@@ -550,7 +570,15 @@
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q8",
+          "text": "Issue #8 says to make exposure beyond loopback conditional on Mongo auth + a read-only web user, and nodes.culture.dev also validates Cf-Access-Jwt-Assertion at the origin. Is Access alone enough for now, or is #8 (and/or origin JWT validation) a prerequisite?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: Access alone is enough for now; issue #8 (Mongo auth + read-only web user) and origin JWT validation are not prerequisites"
+        }
+      ],
       "links": [],
       "instruction": "",
       "revisions": []
@@ -571,6 +599,56 @@
       "id": "c32",
       "kind": "decision",
       "text": "No Access service token for agents for now: agents read locally (127.0.0.1:8095 or the climate CLI's markdown output)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "When the Access session expires mid-poll, the dashboard says 'signed out \u2014 reload to sign in' instead of 'The weather service is not answering'",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "With the CF_Authorization cookie removed, the next poll shows the sign-in message, not the outage state",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "boundary",
+      "text": "The tunnel ingress is pinned to http://127.0.0.1:8095 in Cloudflare, so changing CLIMATE_WEB_PORT or CLIMATE_WEB_BIND means re-running remote-login setup, or climate.culture.dev returns 502",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "The README's exposure section states that the tunnel ingress is pinned to 127.0.0.1:8095 and that changing CLIMATE_WEB_PORT/BIND means re-running 'cultureflare remote-login setup'",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "Cloudflare Access alone gates climate.culture.dev for now; issue #8 (Mongo auth + read-only web user) and Access-JWT validation at the origin stay follow-ups, not prerequisites",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],
@@ -613,6 +691,24 @@
       "text": "An application/markdown seam for agents reading climate.culture.dev remotely (user's words: 'or application/markdown seam for now') \u2014 shape not yet defined",
       "kind": "follow_up",
       "claim_id": "c25",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Tunnel health is invisible to climate-cli: 'climate doctor' / 'stack status' don't check cloudflared-climate.service or the public hostname; a dead connector is noticed only by a viewer (Restart=always mitigates)",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "Residual after the challenge pass: not examined \u2014 Access session length/policy settings, the Cloudflare zone's WAF/bot settings, or an authenticated end-to-end browser check (needs the user's SSO login)",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
       "resolved": false,
       "resolution": "",
       "resolution_claim_id": null
@@ -818,6 +914,50 @@
       "seeds": [
         "c24"
       ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / unstated-assumptions lens: spec c9 vs c30/c32 + cultureflare remote-login show (service-token: not found)",
+      "finding": "c9 asks the README to tell users to set CLIMATE_WEATHER_URL=https://climate.culture.dev for remote CLI/doctor use, but the host is SSO-gated with no service token (c32). Probe: unauthenticated GET /api/v1/health \u2192 302 to agentculture.cloudflareaccess.com, so the CLI would fail. c9's doc text needs rewording.",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / failure-mode lens: climate/weather/web/static/js/api.js:60-71",
+      "finding": "fetch() follows the 302 to the cross-origin Access login; that fails as a network TypeError, which api.js maps to ApiError('The weather service is not answering.', unreachable). An expired session (the Access default) therefore looks like an outage on a 60 s poll. Not probed with a real expired session.",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / security + adjacent-systems lens: gh issue 8 + culture-nodes/docs/operations/nodes-culture-dev.md:31-33",
+      "finding": "Issue #8 (open) lists 'README: make exposure beyond loopback conditional on this being in place'. The nodes precedent honours the Access JWT at its loopback listener; climate web accepts any caller that reaches 127.0.0.1:8095. The spec never mentions either.",
+      "seeds": [
+        "q8"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / operations lens: cultureflare remote-login show (ingress) + docker-compose.yml:111",
+      "finding": "Ingress is remote-managed and hard-codes the port; the compose port is env-configurable. Nothing links the two.",
+      "seeds": [
+        "c34"
+      ]
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / lifecycle + reversibility lens: loginctl Linger=yes + ~/.config/systemd/user/cloudflared-climate.service",
+      "finding": "Clean: linger is on, so the user unit starts at boot without a login; Restart=always. The token is injected by grant (no token file). Reversal = disable the unit + 'cultureflare remote-login teardown'. CLIMATE_CLOUDFLARE_TUNNEL_ID is stored non-hidden and unused by the token-mode connector (harmless).",
+      "seeds": []
+    },
+    {
+      "id": "s31",
+      "surface": "operator hand-turn evidence (2026-09-24)",
+      "finding": "User provisioned tunnel climate-culture-dev + CNAME + Access app + 1 allow policy; the agent installed cloudflared-climate.service (4 registered connections). Unauthenticated /api/v1/health and /api/v1/latest \u2192 302 to the Access login; 8095 still listens on 127.0.0.1 only.",
+      "seeds": []
     }
   ],
   "lapses": [],
