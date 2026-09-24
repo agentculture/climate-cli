@@ -2,7 +2,7 @@
   "plan_slug": "dashboard-data-efficiency",
   "schema_version": 2,
   "created": "2026-09-24T08:13:58Z",
-  "updated": "2026-09-24T18:36:28Z",
+  "updated": "2026-09-24T18:46:59Z",
   "deviations": [
     {
       "id": "d1",
@@ -166,6 +166,63 @@
       "status": "proposed",
       "superseded": false,
       "seq": 8
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o1",
+      "test_ref": "tests/weather/test_mongo.py::test_readings_compound_index_pins_the_exact_esr_spec",
+      "behavior_text": "readings indexes are exactly [fetch_id] and [location, provider, kind, observed_at, requested_at] (post-d2)",
+      "contract_text": "t1 readings compound index, amended by d2 to add requested_at",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "pytest -n auto: 1004 passed at 46afe79",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o1",
+      "test_ref": "live: db.readings.getIndexes() + explain after d2 rebuild",
+      "behavior_text": "live volume holds only the 5-field index (old 4-field dropped); latest_reading on open-meteo/forecast (160,225 docs): LIMIT<-FETCH<-IXSCAN(backward), 1 key/1 doc examined; 7d series metar/observation: FETCH<-IXSCAN, 299 keys for 299 returned; no SORT stage in any plan",
+      "contract_text": "t3: explain shows IXSCAN with totalDocsExamined <= 2x nReturned",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "mongosh explain('executionStats') on the store's exact filter+sort shapes, 187,544 readings",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o3",
+      "test_ref": "live: curl -w time_total x5 after d2 rebuild",
+      "behavior_text": "/latest 5.8-9.6 ms; /locations 22-40 ms; /series 7d (observation+model, step 3600) 60-101 ms, median 94 ms",
+      "contract_text": "t3: curl /series 7d answers in < 100 ms (median of 5)",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "5 consecutive requests against 127.0.0.1:8095 on the rebuilt stack",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
     }
   ],
   "deltas": [
