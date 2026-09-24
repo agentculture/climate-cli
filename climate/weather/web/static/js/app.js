@@ -75,7 +75,15 @@ const state = {
   providers: null,
   lastSpec: null,
   inFlight: null,
+  refreshTimer: null,
 };
+
+/** Stop the minute-poll. Called once, when a signed-out response arrives. */
+function stopPolling() {
+  if (state.refreshTimer === null) return;
+  window.clearInterval(state.refreshTimer);
+  state.refreshTimer = null;
+}
 
 function isoZ(date) {
   return `${date.toISOString().slice(0, 19)}Z`;
@@ -321,6 +329,16 @@ async function refresh() {
 /** What the page says about one failed refresh. One branch, one shape. */
 function failureState(error) {
   const message = error?.message || String(error);
+  if (error instanceof ApiError && error.signedOut) {
+    return {
+      status: "Signed out",
+      kind: "signed-out",
+      title: "Signed out",
+      message: "This dashboard's Access session has expired.",
+      hint: "",
+      reload: true,
+    };
+  }
   if (error instanceof ApiError && error.unreachable) {
     return {
       status: "Not answering",
@@ -356,7 +374,9 @@ function handleFailure(error) {
     title: view.title,
     message: view.message,
     hint: view.hint,
+    reload: Boolean(view.reload),
   });
+  if (view.kind === "signed-out") stopPolling();
 }
 
 /** The banner and the service dot: store down, first hour, or running. */
@@ -510,5 +530,5 @@ window.addEventListener("resize", () => {
 });
 
 renderVariableTabs();
-window.setInterval(refresh, REFRESH_MS);
+state.refreshTimer = window.setInterval(refresh, REFRESH_MS);
 await refresh();
