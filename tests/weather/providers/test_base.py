@@ -457,6 +457,26 @@ def test_every_registered_provider_declares_attribution_quota_and_freshness(
     assert problems == []
 
 
+def test_every_real_registered_provider_declares_a_non_empty_licence() -> None:
+    """Every shipped adapter's ``attribution.licence`` is non-empty.
+
+    ``validate_provider`` only requires attribution text/url, not a licence
+    label (spec ``c46``), so a blank ``licence=""`` passes it silently and
+    only shows up as a missing footer entry on the live stack. This test
+    pins the stronger, real-registry-only requirement directly: every
+    adapter actually shipped in ``climate/weather/providers/`` must show a
+    licence, not just a fixture/fake one (spec task ``ccd-t3``, covers
+    ``c23``/``h9``).
+    """
+    registry.clear_cache()
+    problems = [
+        provider.id
+        for provider in registry.iter_providers()
+        if not (provider.attribution and provider.attribution.licence.strip())
+    ]
+    assert problems == []
+
+
 def test_a_registered_provider_without_attribution_fails_the_registry_check(
     tmp_path: Path,
 ) -> None:
