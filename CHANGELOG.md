@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-09-24
+
+### Added
+
+- **Readings index.** `weather.readings` gets a compound `(location, provider, kind, observed_at)` index. `/series` and `/latest` now read only the requested window instead of scanning all history: on the live stack a 7-day `/series` went from a full scan of ~175,000 documents (0.64 s) to an index scan of the 509 it returns (0.08 s). See `docs/deliveries/2026-09-24-dashboard-data-efficiency.md`.
+- **Signed-out dashboard state.** When the Cloudflare Access session behind a public hostname expires, the dashboard shows "Signed out — Reload to sign in" and stops polling, instead of reporting the weather service as not answering (`fetch` now uses `redirect: "manual"`).
+- **climate.culture.dev operations doc.** `docs/operations/climate-culture-dev.md`: the Cloudflare tunnel + Access SSO topology, the operator steps, verification and undo. The web service stays loopback-bound; the tunnel reaches it locally.
+- Specs and plans for `climate-culture-dev` and `dashboard-data-efficiency` (devague /scope → /think → /challenge → /spec-to-plan).
+
+### Changed
+
+- Index creation is owned by the tracker: `MongoWeatherStore(..., ensure_indexes=...)` / `build_store(ensure_indexes=...)`; the web service opens the store with `ensure_indexes=False`, so it keeps working once it gets a read-only Mongo user (issue #8).
+- `series()` breaks `observed_at` ties by `requested_at` in both stores, so `agg=last` deterministically picks the most recently fetched reading — the rule `latest_reading` already used.
+- README and `docs/weather-api.md` document the Access-gated public hostname; remote CLI/`doctor` access needs an Access service token, not provisioned yet.
+- The IMS observation adapter's attribution now carries a licence (`IMS Terms of Use`), so every provider shows one in the dashboard footer.
+
 ## [0.5.0] - 2026-09-17
 
 ### Added
