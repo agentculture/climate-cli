@@ -35,22 +35,19 @@ def _resolve_bind_port() -> tuple[str, int]:
 def _build_store():
     """Build the persistent store the web service reads from.
 
-    SEAM / CONTRACT GAP: the Mongo-backed store (``climate/weather/mongo.py``)
-    was being written by a parallel task, so its factory API was not
-    available while this module was written. This function is the single
-    place that call binds to it, so the assumption is easy to find and fix
-    in one spot: it lazy-imports ``climate.weather.mongo`` (keeping
-    ``pymongo`` out of every code path that doesn't need it) and calls a
-    no-argument module-level factory named ``build_store()``, assumed to
-    read its own connection settings from environment variables the way the
-    rest of this service does and to return an object that satisfies
-    :class:`climate.weather.store.WeatherStore`. If the real module exposes
-    a different name or signature, this is the only function that needs to
-    change.
+    This function is the single place that binds to
+    :func:`climate.weather.mongo.build_store`: it lazy-imports
+    ``climate.weather.mongo`` (keeping ``pymongo`` out of every code path
+    that doesn't need it) and reads its own connection settings from
+    environment variables the way the rest of this service does.
+
+    Index ownership: the web service only ever reads, so it asks for the
+    store with ``ensure_indexes=False`` — the tracker is the sole owner of
+    ensuring indexes exist (``climate/weather/tracker.py``).
     """
     from climate.weather import mongo  # noqa: PLC0415 - intentionally lazy
 
-    return mongo.build_store()
+    return mongo.build_store(ensure_indexes=False)
 
 
 def main() -> None:
