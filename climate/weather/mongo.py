@@ -589,7 +589,10 @@ class MongoWeatherStore:
             provider=provider, location=location, kind=kind, since=since, until=until
         )
         query[f"values.{variable}"] = {"$exists": True}
-        cursor = self._readings.find(query).sort("observed_at", 1)
+        # requested_at breaks observed_at ties (a re-issued model value, a
+        # repeated report) so the most recently fetched reading sorts last —
+        # what agg=last and latest_reading both mean by "most recent".
+        cursor = self._readings.find(query).sort([("observed_at", 1), ("requested_at", 1)])
         if limit is not None:
             cursor = cursor.limit(limit)
         points: list[SeriesPoint] = []
