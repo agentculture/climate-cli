@@ -360,7 +360,9 @@ def main(
                 remediation=_NO_PROVIDER_REMEDIATION,
             )
 
-        store = store_factory() if store_factory is not None else mongo.build_store()
+        store = (
+            store_factory() if store_factory is not None else mongo.build_store(ensure_indexes=True)
+        )
 
         base_tick_seconds = weather_scheduler.DEFAULT_BASE_TICK_SECONDS
         lease_collection = (
