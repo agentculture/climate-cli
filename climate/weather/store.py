@@ -870,7 +870,8 @@ class InMemoryWeatherStore:
             for reading in self._matching_readings(provider, location, kind, since, until)
             if variable in reading.values
         ]
-        matches.sort(key=lambda reading: reading.observed_at)
+        # requested_at breaks observed_at ties, matching the Mongo store.
+        matches.sort(key=lambda reading: (reading.observed_at, reading.requested_at))
         if limit is not None:
             matches = matches[:limit]
         return [

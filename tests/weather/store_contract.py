@@ -408,6 +408,26 @@ class StoreContractTests:
         assert store.series("temperature", limit=1) == points[:1]
         assert store.series("no_such_variable") == []
 
+    def test_series_breaks_observed_at_ties_by_requested_at(self, store: WeatherStore) -> None:
+        # Two fetches report the same instant (a re-issued model value, a
+        # repeated METAR). The later-requested one is saved first, so only an
+        # explicit requested_at tie-break — not insertion order — puts it last,
+        # which is what agg=last and /latest both mean by "most recent".
+        later = T0 + timedelta(minutes=35)
+        later_id = store.save_fetch(make_fetch(requested_at=later))
+        store.save_readings(
+            later_id,
+            [make_reading(requested_at=later, values={"temperature": Measurement(30.0, "degC")})],
+        )
+        earlier_id = store.save_fetch(make_fetch())
+        store.save_readings(
+            earlier_id,
+            [make_reading(values={"temperature": Measurement(29.9, "degC")})],
+        )
+        points = store.series("temperature")
+        assert [point.fetch_id for point in points] == [earlier_id, later_id]
+        assert [point.value for point in points] == [29.9, 30.0]
+
     def test_count_readings_filters(self, store: WeatherStore) -> None:
         fetch_id = store.save_fetch(make_fetch())
         store.save_readings(
