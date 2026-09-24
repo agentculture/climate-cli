@@ -310,6 +310,60 @@ def test_indexes_created_for_provider_location_requested_at_desc() -> None:
     assert [("provider", 1), ("location", 1), ("requested_at", -1)] in fetches.created_indexes
 
 
+def test_readings_compound_index_pins_the_exact_esr_spec() -> None:
+    fetches = FakeCollection()
+    readings = FakeCollection()
+    MongoWeatherStore(fetches, readings)
+    assert readings.created_indexes == [
+        [("fetch_id", 1)],
+        [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1)],
+    ]
+
+
+def test_ensure_indexes_false_issues_no_create_index_calls() -> None:
+    fetches = FakeCollection()
+    readings = FakeCollection()
+    MongoWeatherStore(fetches, readings, ensure_indexes=False)
+    assert fetches.created_indexes == []
+    assert readings.created_indexes == []
+
+
+def test_build_store_forwards_ensure_indexes_false(monkeypatch: pytest.MonkeyPatch) -> None:
+    """build_store must pass ensure_indexes through to MongoWeatherStore."""
+    fetches = FakeCollection()
+    readings = FakeCollection()
+    fake_db = {
+        weather_mongo.FETCHES_COLLECTION: fetches,
+        weather_mongo.READINGS_COLLECTION: readings,
+        weather_mongo.META_COLLECTION: FakeCollection(),
+    }
+    monkeypatch.setattr(weather_mongo, "connect", lambda uri=None: object())
+    monkeypatch.setattr(weather_mongo, "database", lambda client: fake_db)
+
+    weather_mongo.build_store(ensure_indexes=False)
+
+    assert fetches.created_indexes == []
+    assert readings.created_indexes == []
+
+
+def test_build_store_defaults_to_ensure_indexes_true(monkeypatch: pytest.MonkeyPatch) -> None:
+    fetches = FakeCollection()
+    readings = FakeCollection()
+    fake_db = {
+        weather_mongo.FETCHES_COLLECTION: fetches,
+        weather_mongo.READINGS_COLLECTION: readings,
+        weather_mongo.META_COLLECTION: FakeCollection(),
+    }
+    monkeypatch.setattr(weather_mongo, "connect", lambda uri=None: object())
+    monkeypatch.setattr(weather_mongo, "database", lambda client: fake_db)
+
+    weather_mongo.build_store()
+
+    assert [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1)] in (
+        readings.created_indexes
+    )
+
+
 def test_body_stored_as_plain_bytes_with_the_fake_collection() -> None:
     fetches = FakeCollection()
     store = MongoWeatherStore(fetches, FakeCollection())
