@@ -1,0 +1,39 @@
+# Build Plan — dashboard data efficiency
+
+slug: `dashboard-data-efficiency` · status: `exported` · from frame: `dashboard-data-efficiency`
+
+> The weather dashboard reads only what it shows: chart and stats queries hit an index over the requested window instead of scanning all history, so response time stays flat as the collection grows
+
+## Tasks
+
+### t1 — Mongo store: readings compound index, created only when the store is opened for writing
+
+- instruction: Touch only climate/weather/mongo.py and tests/weather/`test_mongo.py`. Keep the existing two indexes byte-identical. ESR order: equality fields (location, provider, kind) then `observed_at`. Don't add any pymongo import at module scope — the lazy-import contract (tests/`test_stdlib_only.py`) must hold.
+- covers: c2, h15, c18, h14
+- acceptance:
+  - MongoWeatherStore gains an `ensure_indexes` flag (default True, keeping today's behaviour for existing callers); when True it creates the fetches index, the readings `fetch_id` index AND a new readings index \[('location',1),('provider',1),('kind',1),('`observed_at`',1)\]; when False it issues no `create_index` call at all
+  - `build_store`(..., `ensure_indexes`=...) forwards the flag
+  - tests/weather/`test_mongo.py`: FakeCollection.`create_index` records the specs it received; one test pins the exact compound spec on the readings collection, another asserts zero `create_index` calls with `ensure_indexes`=False
+  - `store_contract` tests still pass for both InMemoryWeatherStore and the Mongo store; pymongo stays absent from the dev env (`test_mongo`'s driver-absent assertion still passes)
+
+### t2 — Wire index ownership: the tracker opens the store with indexes ensured, the web service opens it without
+
+- instruction: Touch only climate/weather/tracker.py, climate/weather/web/`__main__.py` and their tests (tests/weather/`test_tracker.py` and a web `__main__` test). Both already go through mongo.`build_store`(); pass the flag, don't restructure.
+- depends on: t1
+- covers: c18, c16, h12
+- acceptance:
+  - climate/weather/tracker.py builds the store with `ensure_indexes`=True; climate/weather/web/`__main__.py` builds it with `ensure_indexes`=False
+  - tests assert each entry point passes the right flag (inject the store factory; no socket, no pymongo)
+  - No HTTP API change: docs/weather-api.md untouched, and tests/weather/web/`test_dashboard_static.py` passes unmodified
+
+### t3 — Verify on the live stack and record the delivery evidence (agent-side: docker + Mongo)
+
+- instruction: Main agent only (needs docker). The Mongo volume must be preserved: use 'climate stack up', never a teardown that drops volumes. Take the baseline before rebuilding.
+- depends on: t2
+- covers: c1, h1, c10, h7, c12, h8, c13, h9, c14, h10, c15, h11, c17, h13
+- acceptance:
+  - Before the rebuild, save /series 7d and /latest JSON for a fixed from/to; after 'climate stack up', the same requests return identical bodies apart from `generated_at`
+  - db.readings.getIndexes() shows the compound index; the 7d series query's explain('executionStats') shows IXSCAN with totalDocsExamined ≤ 2× nReturned
+  - curl /series 7d answers in < 100 ms (median of 5), from the 0.60 s baseline; the index build time is read from the Mongo log and recorded
+  - Full gate green: pytest -n auto (coverage ≥ 60%), black, isort, flake8, bandit, teken cli doctor --strict; 'climate weather latest' output is unchanged
+  - Numbers are written to `docs/deliveries/<date>-dashboard-data-efficiency.md`, measured rather than asserted

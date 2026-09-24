@@ -1,0 +1,228 @@
+{
+  "slug": "dashboard-data-efficiency",
+  "title": "dashboard data efficiency",
+  "frame_slug": "dashboard-data-efficiency",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-24T06:38:46Z",
+  "updated": "2026-09-24T07:31:19Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The weather dashboard reads only what it shows: chart and stats queries hit an index over the requested window instead of scanning all history, so response time stays flat as the collection grows",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "Same query results before and after; only the plan and latency change",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "The tracker ensures the readings index idempotently at startup on the existing volume, and a test with a spec-recording FakeCollection pins the index spec",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "Efficiency changes must keep the pinned contracts green or update them in lockstep: tests/weather/web/test_dashboard_static.py (exact file list, documented-params-only, the loadShape/refresh source-string and isCurrent guard-count asserts), test_api.py test_series_bounds_the_store_query_with_a_limit, and store_contract.py since/until/limit assertions for both stores",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "The full suite passes with the pinned tests updated in the same PR, and no test is deleted to make it pass",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "audience",
+      "text": "Dashboard viewers (local and, once published, climate.culture.dev visitors) and agents calling /series, /latest and /forecast",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "No change for the CLI: weather verbs keep working unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "before_state",
+      "text": "Each /series query examines all 172,882 readings (SORT over COLLSCAN): 0.56 s for a 6 h window and 0.60 s for 7 d, growing by about 25,000 readings a day",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "The numbers are from the live stack on 2026-09-24 (s1, s2, s8)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "after_state",
+      "text": "Chart queries use an index scan over (location, provider, kind, observed_at): documents examined track documents returned, not collection size",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "The index covers the query in the ESR order (equality location/provider/kind, then observed_at range and sort)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "why_it_matters",
+      "text": "Query time stays flat as history grows, and a public site cannot be slowed down by cheap repeated chart requests",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "Index build time on the existing volume is seconds, with no downtime",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "boundary",
+      "text": "No HTTP API contract change: no pagination or cursors (docs/weather-api.md \u00a79), the same routes, params and response shapes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "tests/weather/web/test_dashboard_static.py's documented-params-only check still passes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "success_signal",
+      "text": "On the live stack, the 7 d /series explain shows IXSCAN with totalDocsExamined \u2264 2\u00d7 nReturned, and /series 7d answers in < 100 ms (from 0.60 s)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "Measured and recorded in the delivery doc, not asserted",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "A store opened in read-only mode never calls create_index (asserted with the FakeCollection in tests/weather/test_mongo.py)",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Mongo store: readings compound index, created only when the store is opened for writing",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "MongoWeatherStore gains an ensure_indexes flag (default True, keeping today's behaviour for existing callers); when True it creates the fetches index, the readings fetch_id index AND a new readings index [('location',1),('provider',1),('kind',1),('observed_at',1)]; when False it issues no create_index call at all",
+        "build_store(..., ensure_indexes=...) forwards the flag",
+        "tests/weather/test_mongo.py: FakeCollection.create_index records the specs it received; one test pins the exact compound spec on the readings collection, another asserts zero create_index calls with ensure_indexes=False",
+        "store_contract tests still pass for both InMemoryWeatherStore and the Mongo store; pymongo stays absent from the dev env (test_mongo's driver-absent assertion still passes)"
+      ],
+      "deps": [],
+      "covers": [
+        "c2",
+        "h15",
+        "c18",
+        "h14"
+      ],
+      "instruction": "Touch only climate/weather/mongo.py and tests/weather/test_mongo.py. Keep the existing two indexes byte-identical. ESR order: equality fields (location, provider, kind) then observed_at. Don't add any pymongo import at module scope \u2014 the lazy-import contract (tests/test_stdlib_only.py) must hold."
+    },
+    {
+      "id": "t2",
+      "summary": "Wire index ownership: the tracker opens the store with indexes ensured, the web service opens it without",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "climate/weather/tracker.py builds the store with ensure_indexes=True; climate/weather/web/__main__.py builds it with ensure_indexes=False",
+        "tests assert each entry point passes the right flag (inject the store factory; no socket, no pymongo)",
+        "No HTTP API change: docs/weather-api.md untouched, and tests/weather/web/test_dashboard_static.py passes unmodified"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c18",
+        "c16",
+        "h12"
+      ],
+      "instruction": "Touch only climate/weather/tracker.py, climate/weather/web/__main__.py and their tests (tests/weather/test_tracker.py and a web __main__ test). Both already go through mongo.build_store(); pass the flag, don't restructure."
+    },
+    {
+      "id": "t3",
+      "summary": "Verify on the live stack and record the delivery evidence (agent-side: docker + Mongo)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Before the rebuild, save /series 7d and /latest JSON for a fixed from/to; after 'climate stack up', the same requests return identical bodies apart from generated_at",
+        "db.readings.getIndexes() shows the compound index; the 7d series query's explain('executionStats') shows IXSCAN with totalDocsExamined \u2264 2\u00d7 nReturned",
+        "curl /series 7d answers in < 100 ms (median of 5), from the 0.60 s baseline; the index build time is read from the Mongo log and recorded",
+        "Full gate green: pytest -n auto (coverage \u2265 60%), black, isort, flake8, bandit, teken cli doctor --strict; 'climate weather latest' output is unchanged",
+        "Numbers are written to docs/deliveries/<date>-dashboard-data-efficiency.md, measured rather than asserted"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c10",
+        "h7",
+        "c12",
+        "h8",
+        "c13",
+        "h9",
+        "c14",
+        "h10",
+        "c15",
+        "h11",
+        "c17",
+        "h13"
+      ],
+      "instruction": "Main agent only (needs docker). The Mongo volume must be preserved: use 'climate stack up', never a teardown that drops volumes. Take the baseline before rebuilding."
+    }
+  ],
+  "risks": [],
+  "obligations": []
+}
