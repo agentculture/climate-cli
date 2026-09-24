@@ -2,7 +2,7 @@
   "plan_slug": "dashboard-data-efficiency",
   "schema_version": 2,
   "created": "2026-09-24T08:13:58Z",
-  "updated": "2026-09-24T08:31:24Z",
+  "updated": "2026-09-24T18:36:28Z",
   "deviations": [
     {
       "id": "d1",
@@ -18,6 +18,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Extend the readings compound index to [('location',1),('provider',1),('kind',1),('observed_at',1),('requested_at',1)] so latest_reading()/series() sorts (observed_at, requested_at) are served in index order (reverse scan for newest-first); drop the superseded 4-field index on the live volume; /locations computes each label's newest reading from per-provider/kind latest_reading calls (max) instead of an unfiltered latest_reading(location=...) that sorted the location's whole history in memory",
+      "task_ref": "t1",
+      "reason": "PR #10 /code-review (twice) found the 4-field index cannot satisfy the requested_at tie-break sort added by d1, so Mongo sorts in memory; verifying the reviewer's claim also showed /locations queries by location alone. User chose option A (reuse the index, no third index)",
+      "affects": [
+        "t3"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 9
     }
   ],
   "evidence": [

@@ -370,10 +370,17 @@ class MongoWeatherStore:
             self._fetches.create_index([("provider", 1), ("location", 1), ("requested_at", -1)])
             self._readings.create_index([("fetch_id", 1)])
             # ESR: equality fields (location, provider, kind) then the range/sort
-            # field (observed_at) - the shape latest_reading/series/count_readings
-            # narrow by above.
+            # fields (observed_at, requested_at) - latest_reading/series filter on
+            # all three equality fields and sort (observed_at, requested_at), so
+            # both sorts come straight from the index (backwards for newest-first).
             self._readings.create_index(
-                [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1)]
+                [
+                    ("location", 1),
+                    ("provider", 1),
+                    ("kind", 1),
+                    ("observed_at", 1),
+                    ("requested_at", 1),
+                ]
             )
 
     # --- optional service extensions (see InMemoryWeatherStore) -----------

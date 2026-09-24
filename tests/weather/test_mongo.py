@@ -316,7 +316,7 @@ def test_readings_compound_index_pins_the_exact_esr_spec() -> None:
     MongoWeatherStore(fetches, readings)
     assert readings.created_indexes == [
         [("fetch_id", 1)],
-        [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1)],
+        [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1), ("requested_at", 1)],
     ]
 
 
@@ -359,9 +359,13 @@ def test_build_store_defaults_to_ensure_indexes_true(monkeypatch: pytest.MonkeyP
 
     weather_mongo.build_store()
 
-    assert [("location", 1), ("provider", 1), ("kind", 1), ("observed_at", 1)] in (
-        readings.created_indexes
-    )
+    assert [
+        ("location", 1),
+        ("provider", 1),
+        ("kind", 1),
+        ("observed_at", 1),
+        ("requested_at", 1),
+    ] in (readings.created_indexes)
 
 
 def test_body_stored_as_plain_bytes_with_the_fake_collection() -> None:

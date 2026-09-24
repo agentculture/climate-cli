@@ -73,7 +73,7 @@ from climate.weather.config import WeatherConfig
 from climate.weather.providers import Capability, FreshnessStrategy
 from climate.weather.providers.base import WeatherProvider
 from climate.weather.scheduler import DEFAULT_BASE_TICK_SECONDS
-from climate.weather.store import SCHEMA_VERSION, Reading, WeatherStore
+from climate.weather.store import READING_KINDS, SCHEMA_VERSION, Reading, WeatherStore
 
 __all__ = [
     "API_VERSION",
@@ -945,10 +945,19 @@ def list_locations(
     now: datetime,
 ) -> tuple[int, dict[str, Any]]:
     all_provider_ids = sorted(provider.id for provider in providers)
+    kinds = sorted(READING_KINDS)
     rows = []
     for label in sorted(config.locations):
         reading_count = _store_call(store.count_readings, location=label)
-        newest = _store_call(store.latest_reading, location=label)
+        # Per (provider, kind) so each lookup is an index-ordered read of the
+        # readings compound index; a location-only latest_reading would sort
+        # the label's whole history in memory.
+        newest_per_provider = [
+            reading
+            for reading in (_newest_reading(store, pid, label, kinds) for pid in all_provider_ids)
+            if reading is not None
+        ]
+        newest = max(newest_per_provider, key=lambda r: r.observed_at, default=None)
         rows.append(
             {
                 "location": label,

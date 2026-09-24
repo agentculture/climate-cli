@@ -127,7 +127,7 @@ def heartbeat_provider_snapshot(
 #: value for the present, or a value for a future time.
 ReadingKind = Literal["observation", "model", "forecast"]
 
-_READING_KINDS: frozenset[str] = frozenset({"observation", "model", "forecast"})
+READING_KINDS: frozenset[str] = frozenset({"observation", "model", "forecast"})
 
 
 class StoreError(Exception):
@@ -446,9 +446,9 @@ class Reading:
         _require(self.provider, "Reading.provider")
         _require(self.source, "Reading.source")
         _require(self.location, "Reading.location")
-        if self.kind not in _READING_KINDS:
+        if self.kind not in READING_KINDS:
             raise ValueError(
-                f"Reading.kind must be one of {sorted(_READING_KINDS)}, got {self.kind!r}"
+                f"Reading.kind must be one of {sorted(READING_KINDS)}, got {self.kind!r}"
             )
         if not self.values:
             raise ValueError("Reading.values must not be empty")

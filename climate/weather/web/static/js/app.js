@@ -78,7 +78,13 @@ const state = {
   refreshTimer: null,
 };
 
-/** Stop the minute-poll. Called once, when a signed-out response arrives. */
+/** Start the minute-poll unless it is already running. */
+function startPolling() {
+  if (state.refreshTimer !== null) return;
+  state.refreshTimer = window.setInterval(refresh, REFRESH_MS);
+}
+
+/** Stop the minute-poll when a signed-out response arrives; the next successful refresh restarts it. */
 function stopPolling() {
   if (state.refreshTimer === null) return;
   window.clearInterval(state.refreshTimer);
@@ -315,6 +321,9 @@ async function refresh() {
     if (!isCurrent()) return;
 
     draw({ shape, latest, series, forecast, stats, now, from, colorOf, titleOf });
+    // A re-sign-in elsewhere followed by a manual refresh clears the signed-out
+    // banner; resume polling too, or the page looks healthy while going stale.
+    startPolling();
   } catch (error) {
     if (isAbort(error) || !isCurrent()) return;
     handleFailure(error);
@@ -530,5 +539,5 @@ window.addEventListener("resize", () => {
 });
 
 renderVariableTabs();
-state.refreshTimer = window.setInterval(refresh, REFRESH_MS);
+startPolling();
 await refresh();
