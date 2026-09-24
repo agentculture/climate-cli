@@ -1,0 +1,268 @@
+{
+  "plan_slug": "dashboard-data-efficiency",
+  "schema_version": 2,
+  "created": "2026-09-24T08:13:58Z",
+  "updated": "2026-09-24T18:46:59Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Add a deterministic tie-break to series(): order by (observed_at, requested_at) in both the Mongo and in-memory stores, with a store-contract test, so agg=last always picks the most recently fetched reading (the rule /latest already uses); reword h1 to 'same values before and after, except where several readings share an observed_at \u2014 previously unspecified, now deterministically the most recently fetched'",
+      "task_ref": "t3",
+      "reason": "t3's live before/after check found 2 of 840 /series 7d values and 9 fetch_ids changed: readings sharing an observed_at were tie-broken arbitrarily (the full-scan SORT picked the earlier fetch, the index picks the later one), so h1 'same results' could not hold as written",
+      "affects": [
+        "h1",
+        "c1",
+        "c2"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Extend the readings compound index to [('location',1),('provider',1),('kind',1),('observed_at',1),('requested_at',1)] so latest_reading()/series() sorts (observed_at, requested_at) are served in index order (reverse scan for newest-first); drop the superseded 4-field index on the live volume; /locations computes each label's newest reading from per-provider/kind latest_reading calls (max) instead of an unfiltered latest_reading(location=...) that sorted the location's whole history in memory",
+      "task_ref": "t1",
+      "reason": "PR #10 /code-review (twice) found the 4-field index cannot satisfy the requested_at tie-break sort added by d1, so Mongo sorts in memory; verifying the reviewer's claim also showed /locations queries by location alone. User chose option A (reuse the index, no third index)",
+      "affects": [
+        "t3"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 9
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/weather/test_mongo.py::test_readings_compound_index_pins_the_exact_esr_spec",
+      "behavior_text": "asserts the exact ESR index spec is created on readings",
+      "contract_text": "readings gets a compound (location, provider, kind, observed_at) index",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named pytest test (repo has no behavioral marker or folder) ran green at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 2
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "live: db.readings.getIndexes() + explain on the 7d series query",
+      "behavior_text": "index location_1_provider_1_kind_1_observed_at_1 present; winning plan SORT<-FETCH<-IXSCAN",
+      "contract_text": "series reads only the requested window instead of scanning the collection",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "observed on the live stack after 'climate stack up' at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "tests/weather/test_mongo.py::test_ensure_indexes_false_issues_no_create_index_calls; tests/weather/web/test_main.py; tests/weather/test_tracker.py::test_default_store_factory_asks_mongo_to_ensure_indexes",
+      "behavior_text": "asserts zero create_index calls with ensure_indexes=False and that each entry point passes the right flag",
+      "contract_text": "index creation is owned by the writer; the web store never issues createIndex",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named pytest test (repo has no behavioral marker or folder) ran green at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o3",
+      "test_ref": "live: explain('executionStats') + curl -w time_total (median of 5)",
+      "behavior_text": "examined 509 / returned 509 via IXSCAN; /series 7d median 0.084 s (baseline 0.638 s, 175,059 examined)",
+      "contract_text": "7 d /series explain shows IXSCAN with totalDocsExamined <= 2x nReturned, and answers in < 100 ms",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "measured on the live stack; numbers in docs/deliveries/2026-09-24-dashboard-data-efficiency.md",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o4",
+      "test_ref": "tests/weather/store_contract.py::test_series_breaks_observed_at_ties_by_requested_at (InMemory + Mongo)",
+      "behavior_text": "asserts a later-requested reading saved first still sorts last among observed_at ties",
+      "contract_text": "ties resolve to the most recently fetched reading (deviation d1)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named pytest test (repo has no behavioral marker or folder) ran green at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o4",
+      "test_ref": "live: baseline vs after JSON diff for a fixed 7d window",
+      "behavior_text": "repeat requests identical; 9 of 840 points differ from the pre-index baseline and all 9 are ties resolved to the newest requested_at",
+      "contract_text": "same values before and after except observed_at ties",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "diffed against the baseline saved before the rebuild; each tie checked in Mongo",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o5",
+      "test_ref": "tests/weather/web/test_dashboard_static.py::test_the_dashboard_only_uses_documented_query_parameters",
+      "behavior_text": "asserts every dashboard query param is documented; passes unmodified",
+      "contract_text": "no HTTP API contract change",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named pytest test (repo has no behavioral marker or folder) ran green at the commit; plan B touched no api.py route code",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o1",
+      "test_ref": "tests/weather/test_mongo.py::test_readings_compound_index_pins_the_exact_esr_spec",
+      "behavior_text": "readings indexes are exactly [fetch_id] and [location, provider, kind, observed_at, requested_at] (post-d2)",
+      "contract_text": "t1 readings compound index, amended by d2 to add requested_at",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "pytest -n auto: 1004 passed at 46afe79",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o1",
+      "test_ref": "live: db.readings.getIndexes() + explain after d2 rebuild",
+      "behavior_text": "live volume holds only the 5-field index (old 4-field dropped); latest_reading on open-meteo/forecast (160,225 docs): LIMIT<-FETCH<-IXSCAN(backward), 1 key/1 doc examined; 7d series metar/observation: FETCH<-IXSCAN, 299 keys for 299 returned; no SORT stage in any plan",
+      "contract_text": "t3: explain shows IXSCAN with totalDocsExamined <= 2x nReturned",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "mongosh explain('executionStats') on the store's exact filter+sort shapes, 187,544 readings",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o3",
+      "test_ref": "live: curl -w time_total x5 after d2 rebuild",
+      "behavior_text": "/latest 5.8-9.6 ms; /locations 22-40 ms; /series 7d (observation+model, step 3600) 60-101 ms, median 94 ms",
+      "contract_text": "t3: curl /series 7d answers in < 100 ms (median of 5)",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "5 consecutive requests against 127.0.0.1:8095 on the rebuilt stack",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T18:46:58Z",
+        "commit": "46afe79"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "series() now orders readings that share an observed_at by requested_at, so agg=last deterministically picks the most recently fetched reading (previously arbitrary)",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e4"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": true
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "series() now orders readings that share an observed_at by requested_at, so agg=last deterministically picks the most recently fetched reading (previously arbitrary)",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e5",
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": [
+    {
+      "id": "s1",
+      "action": "supersede",
+      "target_ref": "b1",
+      "replacement_ref": "b2",
+      "origin": "user"
+    }
+  ]
+}

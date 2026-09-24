@@ -389,8 +389,8 @@ class ImsProvider(WeatherProvider):
     freshness = FreshnessStrategy.STATION_CADENCE
     attribution = Attribution(
         text="Data: Israel Meteorological Service (IMS), Envista network",
-        url="https://ims.gov.il/en",
-        licence="",
+        url="https://ims.gov.il/en/termOfuse",
+        licence="IMS Terms of Use",
     )
 
     def __init__(self) -> None:

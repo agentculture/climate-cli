@@ -1,0 +1,1041 @@
+{
+  "slug": "climate-culture-dev",
+  "title": "climate.culture.dev",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-24T06:00:01Z",
+  "updated": "2026-09-24T08:31:44Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The climate-cli weather dashboard is published at https://climate.culture.dev through a Cloudflare tunnel to the loopback-bound weather-web service, following the *.culture.dev tunnel precedent",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "The public hostname resolves and serves the same dashboard as http://127.0.0.1:8095, over HTTPS",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "climate.culture.dev is served by a remote-managed Cloudflare tunnel created with 'cultureflare remote-login setup --hostname climate.culture.dev --service http://127.0.0.1:8095 --apply', the same family as nodes/terminal/lobes.culture.dev \u2014 not Cloudflare Pages, because the dashboard is a live http.server over Mongo, not static content",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "A named tunnel exists in the culture.dev zone with remote-managed ingress climate.culture.dev \u2192 http://127.0.0.1:8095, and 'cultureflare remote-login show --hostname climate.culture.dev' reports it",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "Public or gated? --no-access (anyone can read, like lobes.culture.dev) or Cloudflare Access SSO with an --allow email policy (like nodes.culture.dev)? The web service has no auth of its own (README.md:273).",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: public for now \u2192 --no-access (see c20)"
+        },
+        {
+          "id": "q2",
+          "text": "If public: is Cloudflare's edge enough protection, or do we need a rate-limit / cache rule? api.py has no throttling and sends Cache-Control: no-store on every JSON response.",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: add a Cloudflare cache rule (see c21)"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "A cloudflared-climate.service systemd user unit runs the tunnel with its token injected by 'grant run --inject TUNNEL_TOKEN=CLIMATE_CULTURE_DEV_TUNNEL_TOKEN', never a token file on disk",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "systemctl --user status cloudflared-climate.service is active; the unit's ExecStart uses 'grant run --inject' and no token file exists under ~/.config/cloudflared for climate",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "boundary",
+      "text": "weather-web stays published on host loopback only (CLIMATE_WEB_BIND default 127.0.0.1); the tunnel reaches it locally, so docker-compose.yml and docker/weather.env need no change and the port is never opened to the LAN",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "docker compose ps shows weather-web as 127.0.0.1:8095->8095 after the change; docker/weather.env keeps CLIMATE_WEB_BIND unset or 127.0.0.1",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "boundary",
+      "text": "MongoDB is never exposed: it publishes no host port, and remote access goes through the read-only web API only",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "weather-mongodb has no published host port in docker-compose.yml",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "non_goal",
+      "text": "No code change to climate/weather/web/static/ \u2014 the dashboard already works behind a proxy on another hostname",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c7",
+      "kind": "assumption",
+      "text": "Serving the API publicly leaks no coordinates, station ids or secrets today: responses carry location labels only, provenance.station is always null, provider URLs are redacted of keys and never served, and the web container gets no API keys",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "provenance.station must stay unpopulated (or be re-audited) while the dashboard is public \u2014 METAR/IMS station identifiers would reveal the tracked location",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "api.py still emits provenance.station as null (GAP); any future change that fills it re-opens this spec's privacy review",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md describe the tunnel + Access SSO path and the public base URL, and state that remote CLI/doctor access needs an Access service token, which is not provisioned yet \u2014 agents and the CLI read locally for now",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "README no longer says 'do not put it on the public internet' without context; it documents the tunnel path and CLIMATE_WEATHER_URL=https://climate.culture.dev; docs/weather-api.md lists the public base URL",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h19",
+          "text": "README and docs/weather-api.md document climate.culture.dev behind Access SSO, drop the unqualified 'do not put it on the public internet' warning, and do not advertise CLIMATE_WEATHER_URL=https://climate.culture.dev for the CLI",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q7",
+          "text": "contradiction with c32?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "User confirmed the reword: docs say remote CLI access needs a service token (not provisioned); CLIMATE_WEATHER_URL=https://climate.culture.dev is not advertised"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md base-URL section describe the tunnel path and the CLIMATE_WEATHER_URL=https://climate.culture.dev override for remote CLI/doctor use",
+          "kind": "requirement",
+          "reason": "challenge q7: CLIMATE_WEATHER_URL alone gets the SSO 302 (user confirmed the reword)"
+        }
+      ]
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at) so /series, /latest and /forecast read only the requested window instead of scanning the whole collection; query time stops growing with total history",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "assumption",
+      "text": "Wire payloads are already small and range-bounded (/series 6h \u2248 12 KB, 7d \u2248 87 KB, /forecast 48h \u2248 10 KB); the waste is server-side scanning and client re-fetching, not response size",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "The dashboard loads a window as time-aligned chunks requested with the documented from/to params, keeps completed past chunks in an in-memory cache, and on each 60 s poll re-fetches only the live (newest) chunk \u2014 no cursors or pagination added to the API",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q4",
+          "text": "Chunk size and cache lifetime: day-aligned chunks for 24h/7d and hour-aligned for 6h? Cache only for the page's lifetime (in memory), or also in sessionStorage across reloads? (q3 on c14 is a misfiled duplicate of this question)",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: the issue is Mongo \u2014 add the index. Moved to frame dashboard-data-efficiency (c11)"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "Switching the chart variable fetches only /series for that variable, and changing the window reuses cached chunks that overlap; health/providers/locations/latest/forecast/stats are not re-requested for a chart-only change",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "Below-the-fold panels (the Collection health band backed by /stats) load lazily when scrolled into view (IntersectionObserver), not on every poll",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Chunk size and cache lifetime: day-aligned chunks for 24h/7d and hour-aligned for 6h? Cache only for the page's lifetime (in memory), or also in sessionStorage across reloads?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "Misfiled duplicate of q4; answered there"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "/stats computes bytes_stored without materialising raw provider bodies \u2014 a server-side size aggregation or a body_size stored at write time \u2014 instead of loading up to 20,000 FetchRecord bodies",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "non_goal",
+      "text": "No client-side pixel downsampling in chart.js \u2014 the server already grids /series by step, so a 7d window is ~168 buckets per series",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "assumption",
+      "text": "Forecast rows dominate storage growth: open-meteo + met-no forecast readings are ~99% of the 172,882 readings after 7 days (~25k new readings/day), so the index matters more each week",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "boundary",
+      "text": "Efficiency changes must keep the pinned contracts green or update them in lockstep: tests/weather/web/test_dashboard_static.py (exact file list, documented-params-only, the loadShape/refresh source-string and isCurrent guard-count asserts), test_api.py test_series_bounds_the_store_query_with_a_limit, and store_contract.py since/until/limit assertions for both stores",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "boundary",
+      "text": "Provider secrets reach weather-tracker only: CLIMATE_IMS_API_TOKEN comes from the grant secret IMS_API_TOKEN into the gitignored docker/weather.env, and weather-web never receives it \u2014 which matters more once weather-web is public",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "docker exec weather-web shows no CLIMATE_IMS_API_TOKEN or CLIMATE_OPENWEATHER_API_KEY",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "decision",
+      "text": "climate.culture.dev is public for now: provisioned with 'cultureflare remote-login setup --hostname climate.culture.dev --service http://127.0.0.1:8095 --no-access', no Cloudflare Access app",
+      "origin": "user",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "decision",
+      "text": "A Cloudflare cache rule fronts climate.culture.dev, so repeat reads are served from the edge instead of hitting the unauthenticated, unthrottled origin",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "decision",
+      "text": "Provider data may be re-served publicly (user: 'We can read, it's not indexed yet though'); the licence for every provider is shown at the bottom of the dashboard",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "The dashboard footer (#credits) lists every enabled provider with a non-empty licence; the IMS observation provider's licence, blank today, is filled in from IMS's terms of use",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "GET /api/v1/providers returns a non-empty attribution.licence for all 6 providers, and the footer renders each one",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "The edge cache rule is created with 'cultureflare cache-rule set' once agentculture/cultureflare#56 ships (the origin keeps sending Cache-Control: no-store, so the rule overrides the edge TTL); until then the tunnel + Access go live without the cache",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "The rule is recorded (rule id + TTLs) in a repo doc, and cf-cache-status: HIT appears on a repeated request",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q5",
+          "text": "Cache TTLs: static assets (/, /js, *.css) for e.g. 1 hour and /api/v1/* for 60 s (matching the dashboard's 60 s poll)? /health excluded from caching?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User confirmed: /api/v1/* edge TTL 60 s (excluding /api/v1/health), static assets 1 h"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "The cache rule is created through the Cloudflare API (or dashboard) as an explicit, recorded hand-turn \u2014 the origin keeps sending Cache-Control: no-store, so the rule must set its own edge TTL, and its short TTL is what bounds data staleness",
+          "kind": "requirement",
+          "reason": "user asked to file a cultureflare issue for cache-rule commands"
+        }
+      ]
+    },
+    {
+      "id": "c25",
+      "kind": "audience",
+      "text": "Signed-in viewers on the Access allow list (the operator for now); agents reading over HTTP need an Access service token, since CLIMATE_WEATHER_URL alone gets the SSO redirect",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "The public dashboard needs no login and is usable by both a browser and the CLI",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h17",
+          "text": "An unauthenticated request to any climate.culture.dev path gets the Access login redirect, never weather data",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q6",
+          "text": "Do agents need remote HTTP read now (an Access service token via cultureflare, sealed in grant), or is local 127.0.0.1:8095 enough for them for now?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: 'no need, or application/markdown seam for now' \u2014 no Access service token for agents now"
+        }
+      ],
+      "links": [],
+      "instruction": "check README 'Exposing the web service' names both humans (dashboard) and agents (CLIMATE_WEATHER_URL)",
+      "revisions": [
+        {
+          "text": "Anyone with the link \u2014 the user, AgentCulture teammates and mesh peers \u2014 and agents reading weather over HTTP by pointing CLIMATE_WEATHER_URL at https://climate.culture.dev",
+          "kind": "audience",
+          "reason": "user switched from public to SSO"
+        }
+      ]
+    },
+    {
+      "id": "c26",
+      "kind": "before_state",
+      "text": "The dashboard is reachable only at http://127.0.0.1:8095 on the host running the stack, and README.md:273 warns against putting it on the public internet",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "Today's stack publishes 127.0.0.1:8095 only (docker compose ps)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "compare README.md before/after the change",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "after_state",
+      "text": "https://climate.culture.dev serves the dashboard and /api/v1 over HTTPS through a Cloudflare tunnel, with a licence footer and an edge cache, while weather-web stays loopback-bound on the host",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "Nothing is exposed except through the tunnel: no LAN or public port opens on the host",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "open https://climate.culture.dev in a browser; run ss -ltnp and confirm 8095 is bound to 127.0.0.1 only",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "why_it_matters",
+      "text": "Measured conditions can be viewed from anywhere, without LAN or VPN access, while only allow-listed people can read the collected history",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "No new cost: the Cloudflare tunnel and cache are on the existing free zone",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "n/a \u2014 motivation",
+      "revisions": [
+        {
+          "text": "Measured conditions can be viewed and consumed from anywhere, without LAN or VPN access, for the same zero cost the local dashboard has today",
+          "kind": "why_it_matters",
+          "reason": "user switched from public to SSO"
+        }
+      ]
+    },
+    {
+      "id": "c29",
+      "kind": "success_signal",
+      "text": "Unauthenticated curl https://climate.culture.dev/api/v1/health gets the Access login redirect (302), not data; after SSO login the dashboard loads; a repeated /api/v1/latest within 60 s returns cf-cache-status: HIT; 6 of 6 providers show a non-empty licence in the footer; 0 coordinates or secrets in any response",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "Every check in the signal is run and passes before the spec is marked delivered",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "curl -sI twice and read cf-cache-status; GET /api/v1/providers and count non-empty attribution.licence; grep the served HTML/JSON for the private label's coordinates and key prefixes",
+      "revisions": [
+        {
+          "text": "curl https://climate.culture.dev/api/v1/health returns 200; a repeated /api/v1/latest within 60 s returns cf-cache-status: HIT; 6 of 6 providers show a non-empty licence in the footer; 0 coordinates or secrets in any response",
+          "kind": "success_signal",
+          "reason": "user switched from public to SSO"
+        }
+      ]
+    },
+    {
+      "id": "c30",
+      "kind": "decision",
+      "text": "For now climate.culture.dev sits behind Cloudflare Access SSO: 'cultureflare remote-login setup ... --allow <operator email>'. The allow-list email is operator configuration supplied at provisioning time, never written into the repo, this spec or the public memory store (supersedes the earlier public/--no-access decision c20)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "grep -r for the operator email across the repo, .devague and .eidetic finds nothing; 'cultureflare remote-login show --hostname climate.culture.dev' reports an Access app with one allow policy",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q8",
+          "text": "Issue #8 says to make exposure beyond loopback conditional on Mongo auth + a read-only web user, and nodes.culture.dev also validates Cf-Access-Jwt-Assertion at the origin. Is Access alone enough for now, or is #8 (and/or origin JWT validation) a prerequisite?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: Access alone is enough for now; issue #8 (Mongo auth + read-only web user) and origin JWT validation are not prerequisites"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "decision",
+      "text": "Cache TTLs: /api/v1/* 60 s at the edge (matching the dashboard's 60 s poll), /api/v1/health not cached, static assets 1 h",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "decision",
+      "text": "No Access service token for agents for now: agents read locally (127.0.0.1:8095 or the climate CLI's markdown output)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "When the Access session expires mid-poll, the dashboard says 'signed out \u2014 reload to sign in' instead of 'The weather service is not answering'",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "With the CF_Authorization cookie removed, the next poll shows the sign-in message, not the outage state",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "boundary",
+      "text": "The tunnel ingress is pinned to http://127.0.0.1:8095 in Cloudflare, so changing CLIMATE_WEB_PORT or CLIMATE_WEB_BIND means re-running remote-login setup, or climate.culture.dev returns 502",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "The README's exposure section states that the tunnel ingress is pinned to 127.0.0.1:8095 and that changing CLIMATE_WEB_PORT/BIND means re-running 'cultureflare remote-login setup'",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "Cloudflare Access alone gates climate.culture.dev for now; issue #8 (Mongo auth + read-only web user) and Access-JWT validation at the origin stay follow-ups, not prerequisites",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Provider licence terms (MET Norway, OpenWeather, IMS, Open-Meteo, METAR/aviationweather) were read in summary only; re-serving their data on the public internet may need attribution on the dashboard or be disallowed by one provider \u2014 README.md:276-279 and the weather-tracking-service frame's open lapse say re-check before exposing beyond the LAN",
+      "kind": "unknown_blocking",
+      "claim_id": null,
+      "resolved": true,
+      "resolution": "User: we can read/re-serve the data; the site is not indexed yet; show the licence at the bottom of the dashboard",
+      "resolution_claim_id": "c22"
+    },
+    {
+      "id": "v2",
+      "text": "Data-efficiency claims c10\u2013c18 moved to frame dashboard-data-efficiency when the user split the scope into two specs (2026-09-24)",
+      "kind": "out_of_scope",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Cache rule depends on agentculture/cultureflare#56 (cache-rule commands) \u2014 also confirms the rule respects Cloudflare Access and overrides origin no-store",
+      "kind": "unknown_nonblocking",
+      "claim_id": "c24",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v4",
+      "text": "An application/markdown seam for agents reading climate.culture.dev remotely (user's words: 'or application/markdown seam for now') \u2014 shape not yet defined",
+      "kind": "follow_up",
+      "claim_id": "c25",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Tunnel health is invisible to climate-cli: 'climate doctor' / 'stack status' don't check cloudflared-climate.service or the public hostname; a dead connector is noticed only by a viewer (Restart=always mitigates)",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "Residual after the challenge pass: not examined \u2014 Access session length/policy settings, the Cloudflare zone's WAF/bot settings, or an authenticated end-to-end browser check (needs the user's SSO login)",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "culture-nodes/docs/operations/nodes-culture-dev.md + cultureflare/README.md:55,90",
+      "finding": "Live local services on *.culture.dev use a remote-managed cloudflared tunnel provisioned by 'cultureflare remote-login setup' (tunnel + CNAME + optional Access app); static sites (tools.culture.dev) use CF Pages instead. The dashboard is a live service \u2192 tunnel family.",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "~/.config/systemd/user/cloudflared-terminal.service",
+      "finding": "Newest precedent unit uses 'grant run --inject TUNNEL_TOKEN=TERMINAL_CF_TUNNEL_TOKEN -- cloudflared tunnel --no-autoupdate run'; no ~/.cloudflared or /etc/cloudflared config exists \u2014 ingress is remote-managed. Older units use 0600 token files in ~/.config/cloudflared.",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "docker-compose.yml:111 + weather-web container (docker compose ps)",
+      "finding": "Host publish is '${CLIMATE_WEB_BIND:-127.0.0.1}:${CLIMATE_WEB_PORT:-8095}:8095'; running stack shows 127.0.0.1:8095->8095 \u2014 exactly the loopback-publish shape nodes.culture.dev uses (127.0.0.1:18081).",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "docker-compose.yml weather-mongodb + .devague/frames/weather-tracking-service.json resolved question",
+      "finding": "weather-mongodb has no ports: (reachable only on the compose network); prior spec resolved that outside access is served by the web service, not by opening the database.",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "climate/weather/web/static/js/api.js:1-20, index.html",
+      "finding": "All API calls are same-origin relative paths; no hardcoded host, no CDN or external fonts \u2014 portable behind the tunnel unmodified.",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "docs/weather-api.md:26 + climate/weather/web/api.py:597,1140,1449 + store.py redact_url + docker-compose.yml weather-web (no env_file)",
+      "finding": "Contract forbids coordinates in any response; implementation nulls provenance.station ('GAP'); endpoint names not URLs are served; web container deliberately receives no provider credentials.",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "docs/weather-api.md:163 vs api.py:597",
+      "finding": "Contract earmarks provenance.station for a station id on ims/metar; implementation leaves it null today. Filling it later would turn a public API into a location leak.",
+      "seeds": [
+        "c8"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "README.md:261-279 + docs/weather-api.md:47-49,87 + climate/cli/_commands/doctor.py:209",
+      "finding": "README currently says 'do not put it on the public internet'; the API doc lists http://127.0.0.1:8095 as the base URL and justifies no-CORS by same-origin. CLI/doctor already honour CLIMATE_WEATHER_URL, so no code change \u2014 docs only.",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "README.md:273-279 (Exposing the web service warning)",
+      "finding": "The web service has no authentication, and the README explicitly says not to put it on the public internet without a reverse proxy with auth. So whether climate.culture.dev is public or behind Access is a user decision, not something to infer.",
+      "seeds": [
+        "q1"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "climate/weather/web/api.py:1844 + dispatch()",
+      "finding": "GET/HEAD only (405 otherwise), generic 500 bodies, no access log, no throttling, and Cache-Control: no-store \u2014 a public endpoint relies entirely on the Cloudflare edge for abuse protection.",
+      "seeds": [
+        "q2"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "climate/weather/mongo.py:361-362 + live explain() on weather.readings",
+      "finding": "Only indexes are fetches(provider,location,requested_at) and readings(fetch_id). A 7-day series query explains as SORT over COLLSCAN: 172,882 docs examined to return a window. Measured /series 6h = 0.56s and 7d = 0.60s \u2014 flat, because the cost is the full scan, not the window.",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "curl timings against 127.0.0.1:8095 + api.py /series (from/to/step/max_points push-down, MAX_SERIES_STORE_POINTS=100000)",
+      "finding": "The API already pushes since/until/limit into store.series and grids the result (default 2000, ceiling 10000 points). The dashboard sends from and step per window (app.js:31-35), so responses are bounded; only the Mongo side reads everything.",
+      "seeds": [
+        "c11"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "climate/weather/web/static/js/app.js:5-8,28,280-319,499-513 + docs/weather-api.md:1458",
+      "finding": "Every 60 s poll, window change and variable-tab change re-runs the full refresh(): 7 requests (health, providers, locations, latest, series, forecast, stats) re-downloading the whole window. There is no cache ('never a merge with something remembered'). The contract rules out pagination and cursors (\u00a79), but from/to are documented, so chunking by time needs no API change. Open chunk-size question: q4 on c12.",
+      "seeds": [
+        "c12"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "climate/weather/web/static/js/app.js:199-204 (variable tabs) + 220-278 (loadShape/loadView)",
+      "finding": "A variable-tab click calls the same full refresh() as the poll, so 6 of the 7 requests fetch data that didn't change.",
+      "seeds": [
+        "c13"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "climate/weather/web/static/ (grep IntersectionObserver = 0 hits) + app.js loadView",
+      "finding": "All three bands (Now, Trend, Collection) are fetched unconditionally on every refresh; nothing is lazy today.",
+      "seeds": [
+        "c14"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "climate/weather/web/api.py:126,1654-1686 + mongo.py _fetch_from_document",
+      "finding": "bytes_stored = sum(len(record.body)) over iter_fetches(limit=20000); the Mongo query has no projection, so each /stats call pulls raw bodies (24 MB in the fetches collection after 7 days). Measured /stats 24h = 0.25s.",
+      "seeds": [
+        "c15"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "climate/weather/web/static/js/chart.js:301-332 + app.js WINDOWS steps",
+      "finding": "drawSeries emits every point as SVG, but points arrive pre-gridded (6h/900s = 24, 24h/1800s = 48, 7d/3600s = 168 buckets), so there's no rendering win without longer windows.",
+      "seeds": [
+        "c16"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "live aggregation over weather.readings grouped by provider/kind",
+      "finding": "open-meteo forecast 147,699 + met-no forecast 23,320 out of 172,882; observation/model rows are about 1,700. Without an index, every chart query scans all the forecast rows too.",
+      "seeds": [
+        "c17"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "tests/weather/web/test_dashboard_static.py + tests/weather/web/test_api.py:655 + tests/weather/store_contract.py:384-408",
+      "finding": "Several tests pin refresh()'s literal structure and the store limit kwarg; restructuring the refresh for chunks and lazy loading will need those tests rewritten, and a new JS module must be added to EXPECTED_FILES.",
+      "seeds": [
+        "c18"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "docker/weather.env (gitignored, 0600) + docker-compose.yml weather-web (no env_file) + docker exec env check",
+      "finding": "IMS token injected via 'grant run --inject' on 2026-09-24; after stack up the tracker has it (ims stations fetch http=200) and the web container does not.",
+      "seeds": [
+        "c19"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "climate/weather/web/static/index.html:92 + js/panels.js:419-428 + providers/ims.py:391-393 + GET /api/v1/providers",
+      "finding": "A credits footer already renders attribution.text/url plus attribution.licence per provider. Live /providers shows five of the six with a licence; the IMS observation adapter has licence=\"\" so its footer row shows no licence.",
+      "seeds": [
+        "c23"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "cultureflare --help + cultureflare/README.md",
+      "finding": "cultureflare covers zones, dns and remote-login only \u2014 there's no cache-rule command, so the rule needs the Cloudflare API/dashboard directly (or a cultureflare feature request).",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "climate/weather/web/api.py:1844 (_write_json)",
+      "finding": "Every API JSON response sends Cache-Control: no-store, and static files send no cache headers; a Cloudflare cache rule that honours origin headers would cache nothing on /api, so it must override the edge TTL.",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "culture-nodes/docs/operations/nodes-culture-dev.md:18,33 + cultureflare/README.md:74,89",
+      "finding": "The Access-gated precedent is nodes.culture.dev: 'remote-login setup --allow EMAIL' creates tunnel + DNS + Access app + allow policy; README row 74 notes an optional service token for non-browser clients.",
+      "seeds": [
+        "c30"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "agentculture/cultureflare#56 (filed 2026-09-24)",
+      "finding": "Asked cultureflare for a cache-rule list/set/delete group on the http_request_cache_settings phase, mirroring cf-redirect-create.sh. The issue also asks them to confirm override_origin beats no-store, and that cached responses are only served after the Access check.",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / unstated-assumptions lens: spec c9 vs c30/c32 + cultureflare remote-login show (service-token: not found)",
+      "finding": "c9 asks the README to tell users to set CLIMATE_WEATHER_URL=https://climate.culture.dev for remote CLI/doctor use, but the host is SSO-gated with no service token (c32). Probe: unauthenticated GET /api/v1/health \u2192 302 to agentculture.cloudflareaccess.com, so the CLI would fail. c9's doc text needs rewording.",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / failure-mode lens: climate/weather/web/static/js/api.js:60-71",
+      "finding": "fetch() follows the 302 to the cross-origin Access login; that fails as a network TypeError, which api.js maps to ApiError('The weather service is not answering.', unreachable). An expired session (the Access default) therefore looks like an outage on a 60 s poll. Not probed with a real expired session.",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / security + adjacent-systems lens: gh issue 8 + culture-nodes/docs/operations/nodes-culture-dev.md:31-33",
+      "finding": "Issue #8 (open) lists 'README: make exposure beyond loopback conditional on this being in place'. The nodes precedent honours the Access JWT at its loopback listener; climate web accepts any caller that reaches 127.0.0.1:8095. The spec never mentions either.",
+      "seeds": [
+        "q8"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / operations lens: cultureflare remote-login show (ingress) + docker-compose.yml:111",
+      "finding": "Ingress is remote-managed and hard-codes the port; the compose port is env-configurable. Nothing links the two.",
+      "seeds": [
+        "c34"
+      ]
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / lifecycle + reversibility lens: loginctl Linger=yes + ~/.config/systemd/user/cloudflared-climate.service",
+      "finding": "Clean: linger is on, so the user unit starts at boot without a login; Restart=always. The token is injected by grant (no token file). Reversal = disable the unit + 'cultureflare remote-login teardown'. CLIMATE_CLOUDFLARE_TUNNEL_ID is stored non-hidden and unused by the token-mode connector (harmless).",
+      "seeds": []
+    },
+    {
+      "id": "s31",
+      "surface": "operator hand-turn evidence (2026-09-24)",
+      "finding": "User provisioned tunnel climate-culture-dev + CNAME + Access app + 1 allow policy; the agent installed cloudflared-climate.service (4 registered connections). Unauthenticated /api/v1/health and /api/v1/latest \u2192 302 to the Access login; 8095 still listens on 127.0.0.1 only.",
+      "seeds": []
+    }
+  ],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Task t3 set the IMS observation licence to 'IMS Terms of Use' (url /en/termOfuse) by copying ims_forecast's label; the IMS terms page is JS-rendered and WebFetch returned only template scaffolding, so the wording was not verified against the page",
+      "skipped_check": "read the rendered IMS terms-of-use text (needs a JS-capable browser)",
+      "refs": [
+        "plan climate-culture-dev t3: climate/weather/providers/ims.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c33",
+      "seam": "dashboard fetch + page-state (static/js/api.js, app.js, panels.js)",
+      "behavior": "an expired Access session shows 'Signed out \u2014 Reload to sign in' and stops polling, not the outage state",
+      "source_text": "When the Access session expires mid-poll, the dashboard says 'signed out \u2014 reload to sign in' instead of 'The weather service is not answering'",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c23",
+      "seam": "provider attribution \u2192 /api/v1/providers \u2192 dashboard footer",
+      "behavior": "every provider carries a non-empty licence",
+      "source_text": "The dashboard footer (#credits) lists every enabled provider with a non-empty licence; the IMS observation provider's licence, blank today, is filled in from IMS's terms of use",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c25",
+      "seam": "https://climate.culture.dev (Cloudflare Access)",
+      "behavior": "an unauthenticated request to any path gets the Access login redirect, never weather data",
+      "source_text": "Signed-in viewers on the Access allow list (the operator for now); agents reading over HTTP need an Access service token, since CLIMATE_WEATHER_URL alone gets the SSO redirect",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c4",
+      "seam": "host port publishing + container env (docker compose)",
+      "behavior": "weather-web stays loopback-only, Mongo has no host port, and weather-web has no provider keys",
+      "source_text": "weather-web stays published on host loopback only (CLIMATE_WEB_BIND default 127.0.0.1); the tunnel reaches it locally, so docker-compose.yml and docker/weather.env need no change and the port is never opened to the LAN",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c9",
+      "seam": "README.md 'Exposing the web service' + docs/weather-api.md \u00a72",
+      "behavior": "docs describe the Access-gated tunnel path and the port pinning, and don't advertise CLIMATE_WEATHER_URL for the public host",
+      "source_text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md describe the tunnel + Access SSO path and the public base URL, and state that remote CLI/doctor access needs an Access service token, which is not provisioned yet \u2014 agents and the CLI read locally for now",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c24",
+      "seam": "Cloudflare cache rule for climate.culture.dev",
+      "behavior": "/api/v1/* edge TTL 60 s (not /health), static 1 h; repeat request shows cf-cache-status: HIT",
+      "source_text": "The edge cache rule is created with 'cultureflare cache-rule set' once agentculture/cultureflare#56 ships (the origin keeps sending Cache-Control: no-store, so the rule overrides the edge TTL); until then the tunnel + Access go live without the cache",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c29",
+      "seam": "end-to-end success signal (t6)",
+      "behavior": "after SSO login the dashboard matches the loopback one with 6 licences; repeat /latest HITs the cache",
+      "source_text": "Unauthenticated curl https://climate.culture.dev/api/v1/health gets the Access login redirect (302), not data; after SSO login the dashboard loads; a repeated /api/v1/latest within 60 s returns cf-cache-status: HIT; 6 of 6 providers show a non-empty licence in the footer; 0 coordinates or secrets in any response",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
+}

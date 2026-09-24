@@ -402,6 +402,43 @@ def test_locations_reports_reading_count_and_newest_observed(store, config, prov
     assert rows[OTHER_LABEL]["newest_observed_at"] is None
 
 
+def test_locations_newest_is_max_across_providers_and_kinds_via_narrow_lookups(
+    store, config, providers, monkeypatch
+) -> None:
+    """newest_observed_at is the max over every (provider, kind), and each
+    latest_reading lookup names provider AND kind so Mongo can serve it from
+    the readings compound index instead of sorting the label's history."""
+    newest = NOW + timedelta(hours=3)
+    for provider, kind, observed_at in (
+        ("test-model", "model", NOW - timedelta(minutes=5)),
+        ("test-model", "forecast", newest),
+        ("test-obs", "observation", NOW - timedelta(minutes=1)),
+    ):
+        _save_reading(
+            store,
+            provider=provider,
+            source="v1/forecast",
+            location=NEUTRAL_LABEL,
+            observed_at=observed_at,
+            requested_at=NOW - timedelta(minutes=5),
+            kind=kind,
+            values={"temperature": (20.0, "degC")},
+        )
+    calls = []
+    real_latest = store.latest_reading
+
+    def spy(**kwargs):
+        calls.append(kwargs)
+        return real_latest(**kwargs)
+
+    monkeypatch.setattr(store, "latest_reading", spy)
+    _, body = api.list_locations(store, config, providers, {}, NOW)
+    rows = {row["location"]: row for row in body["locations"]}
+    assert rows[NEUTRAL_LABEL]["newest_observed_at"] == api._format_time(newest)
+    assert calls
+    assert all(call.get("provider") and call.get("kind") for call in calls)
+
+
 # --- /latest ---------------------------------------------------------------------
 
 

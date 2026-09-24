@@ -1,0 +1,163 @@
+{
+  "plan_slug": "climate-culture-dev",
+  "schema_version": 2,
+  "created": "2026-09-24T08:31:43Z",
+  "updated": "2026-09-24T19:57:58Z",
+  "deviations": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/weather/web/test_dashboard_static.py (6 signed-out tests: redirect manual, opaqueredirect\u2192signedOut, stops polling, reload link via textContent, no innerHTML)",
+      "behavior_text": "asserts the source implements the signed-out path",
+      "contract_text": "the dashboard shows a signed-out state instead of the outage state",
+      "evidence_type": "automated",
+      "strength": "fidelity",
+      "strength_basis": "static source-shape tests (no JS runtime in CI); ran green at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 1
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "browser: Playwright Chromium against the dev server behind a scratch gate that 302s /api/v1/* to another origin",
+      "behavior_text": "rendered .page-state--signed-out with 'Reload to sign in'; no outage state; 0 API requests in the following 65 s",
+      "contract_text": "with the session gone, the next poll shows the sign-in message, not the outage state (h18)",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "agent-side browser run on the merged t4 code; screenshot in the session scratchpad",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 2
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "tests/weather/providers/test_base.py::test_every_real_registered_provider_declares_a_non_empty_licence",
+      "behavior_text": "iterates the real registry and asserts each licence is non-empty",
+      "contract_text": "every enabled provider lists a non-empty licence",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "named pytest test (repo has no behavioral marker or folder) ran green at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o2",
+      "test_ref": "live: GET http://127.0.0.1:8095/api/v1/providers",
+      "behavior_text": "6 / 6 providers return a non-empty attribution.licence",
+      "contract_text": "GET /api/v1/providers returns a non-empty licence for all 6 providers (h9)",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "observed on the rebuilt live stack at the commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o3",
+      "test_ref": "live: curl --resolve via 1.1.1.1 to /, /api/v1/health, /api/v1/latest",
+      "behavior_text": "all three return 302 to agentculture.cloudflareaccess.com/cdn-cgi/access/login/climate.culture.dev",
+      "contract_text": "an unauthenticated request gets the Access login redirect, never weather data (h17)",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "observed from this host at the commit timestamp",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o4",
+      "test_ref": "live: docker compose ps + docker exec env (names only) + systemctl --user is-active cloudflared-climate.service",
+      "behavior_text": "weather-web 127.0.0.1:8095 only; weather-mongodb no host port; web has no API/TOKEN vars while the tracker has both provider keys; tunnel unit active",
+      "contract_text": "loopback-only origin, Mongo never exposed, provider secrets reach the tracker only (c4, c5, c19)",
+      "evidence_type": "observation",
+      "strength": "execution",
+      "strength_basis": "observed on the live host at the commit timestamp",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o5",
+      "test_ref": "manual: grep README.md docs/weather-api.md",
+      "behavior_text": "0 occurrences of CLIMATE_WEATHER_URL=https://climate.culture.dev; the unqualified 'do not put it on the public internet' is gone; README states the ingress is pinned to 127.0.0.1:8095",
+      "contract_text": "docs document the SSO path without advertising CLIMATE_WEATHER_URL (h19, h20)",
+      "evidence_type": "manual",
+      "strength": "coverage",
+      "strength_basis": "text inspection at the commit; markdownlint clean",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T08:30:27",
+        "commit": "475b8e3"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o1",
+      "test_ref": "agent-side headless Chromium (Playwright 1.63, page.clock + page.route 302) against 127.0.0.1:8095",
+      "behavior_text": "API 302 -> banner 'Signed out / This dashboard's Access session has expired. / Reload to sign in' (page-state--signed-out, warning tone, styled reload button, light+dark); 0 polls over 2 further minutes; after routes restored + a variable-tab click the refresh returns 200s, the banner hides, and polling resumes (1 poll at +61 s, 2 at +121 s); no console errors",
+      "contract_text": "an expired Access session shows 'Signed out \u2014 Reload to sign in' and stops polling, not the outage state",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "scripted browser run with a controlled clock against the rebuilt live stack; screenshots in the session scratchpad",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T19:57:58Z",
+        "commit": "5a0d42c"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    }
+  ],
+  "deltas": [],
+  "supersessions": []
+}

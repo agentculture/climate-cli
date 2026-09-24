@@ -439,8 +439,8 @@ function emptyNote(message) {
 }
 
 /**
- * The page-level state banner: unreachable service, unreachable store, or
- * the first hour of collection.
+ * The page-level state banner: unreachable service, unreachable store,
+ * signed out, or the first hour of collection.
  */
 export function renderPageState(container, state) {
   if (!state) {
@@ -462,6 +462,13 @@ export function renderPageState(container, state) {
     hint.className = "page-state__hint";
     hint.textContent = state.hint;
     container.appendChild(hint);
+  }
+  if (state.reload) {
+    const link = document.createElement("a");
+    link.className = "page-state__reload";
+    link.href = window.location.pathname + window.location.search;
+    link.textContent = "Reload to sign in";
+    container.appendChild(link);
   }
 }
 

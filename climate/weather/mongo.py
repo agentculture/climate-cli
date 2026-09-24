@@ -351,15 +351,37 @@ class MongoWeatherStore:
     database; opening them is :func:`connect`'s job, not this class's.
     """
 
-    def __init__(self, fetches: Any, readings: Any, *, meta: Any = None, db: Any = None) -> None:
+    def __init__(
+        self,
+        fetches: Any,
+        readings: Any,
+        *,
+        meta: Any = None,
+        db: Any = None,
+        ensure_indexes: bool = True,
+    ) -> None:
         self._fetches = fetches
         self._readings = readings
         self._meta = meta
         self._db = db
-        # (provider, location, requested_at desc): the shape every filtered
-        # iter_fetches/latest_fetch/count_fetches query above narrows by.
-        self._fetches.create_index([("provider", 1), ("location", 1), ("requested_at", -1)])
-        self._readings.create_index([("fetch_id", 1)])
+        if ensure_indexes:
+            # (provider, location, requested_at desc): the shape every filtered
+            # iter_fetches/latest_fetch/count_fetches query above narrows by.
+            self._fetches.create_index([("provider", 1), ("location", 1), ("requested_at", -1)])
+            self._readings.create_index([("fetch_id", 1)])
+            # ESR: equality fields (location, provider, kind) then the range/sort
+            # fields (observed_at, requested_at) - latest_reading/series filter on
+            # all three equality fields and sort (observed_at, requested_at), so
+            # both sorts come straight from the index (backwards for newest-first).
+            self._readings.create_index(
+                [
+                    ("location", 1),
+                    ("provider", 1),
+                    ("kind", 1),
+                    ("observed_at", 1),
+                    ("requested_at", 1),
+                ]
+            )
 
     # --- optional service extensions (see InMemoryWeatherStore) -----------
 
@@ -574,7 +596,10 @@ class MongoWeatherStore:
             provider=provider, location=location, kind=kind, since=since, until=until
         )
         query[f"values.{variable}"] = {"$exists": True}
-        cursor = self._readings.find(query).sort("observed_at", 1)
+        # requested_at breaks observed_at ties (a re-issued model value, a
+        # repeated report) so the most recently fetched reading sorts last —
+        # what agg=last and latest_reading both mean by "most recent".
+        cursor = self._readings.find(query).sort([("observed_at", 1), ("requested_at", 1)])
         if limit is not None:
             cursor = cursor.limit(limit)
         points: list[SeriesPoint] = []
@@ -614,16 +639,21 @@ class MongoWeatherStore:
 # --- tracker lease -------------------------------------------------------------
 
 
-def build_store(uri: str | None = None) -> MongoWeatherStore:
+def build_store(uri: str | None = None, *, ensure_indexes: bool = True) -> MongoWeatherStore:
     """Connect (through the one choke-point) and return the service's store.
 
     Used by the tracker and the web service. The URI comes from
     ``WEATHER_MONGO_URI`` unless given; the guard in :func:`resolve_uri`
-    still applies.
+    still applies. ``ensure_indexes`` is forwarded to
+    :class:`MongoWeatherStore` unchanged.
     """
     db = database(connect(uri))
     return MongoWeatherStore(
-        db[FETCHES_COLLECTION], db[READINGS_COLLECTION], meta=db[META_COLLECTION], db=db
+        db[FETCHES_COLLECTION],
+        db[READINGS_COLLECTION],
+        meta=db[META_COLLECTION],
+        db=db,
+        ensure_indexes=ensure_indexes,
     )
 
 

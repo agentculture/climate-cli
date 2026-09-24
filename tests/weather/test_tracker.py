@@ -392,3 +392,25 @@ def test_sigterm_stops_the_run_cleanly_and_releases_the_lease(tmp_path):
     from climate.weather.mongo import LEASE_DOC_ID
 
     assert LEASE_DOC_ID not in collection.documents
+
+
+def test_default_store_factory_asks_mongo_to_ensure_indexes(tmp_path, monkeypatch, capsys):
+    """No ``store_factory`` injected: the tracker owns index creation, so it
+    must call ``mongo.build_store(ensure_indexes=True)`` explicitly rather
+    than relying on the default."""
+    _write_config(tmp_path / "weather.json")
+    fetch = FakeFetch()
+    collection = FakeCollection()
+    calls: list = []
+
+    def _recording_build_store(*args, **kwargs):
+        calls.append((args, kwargs))
+        return HeartbeatFailingStore()
+
+    monkeypatch.setattr(tracker.mongo, "build_store", _recording_build_store)
+    monkeypatch.setattr(tracker.mongo, "lease_collection", lambda *a, **k: collection)
+
+    code = tracker.main(fetch=fetch)
+
+    assert code == EXIT_ENV_ERROR
+    assert calls == [((), {"ensure_indexes": True})]

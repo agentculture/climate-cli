@@ -1,0 +1,578 @@
+{
+  "slug": "dashboard-data-efficiency",
+  "title": "dashboard data efficiency",
+  "schema_version": 6,
+  "status": "exported",
+  "created": "2026-09-24T06:10:54Z",
+  "updated": "2026-09-24T08:31:12Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The weather dashboard reads only what it shows: chart and stats queries hit an index over the requested window instead of scanning all history, so response time stays flat as the collection grows",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "Same query results before and after; only the plan and latency change",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "MongoWeatherStore.__init__ creates the index idempotently (like the existing fetches index), so both tracker and web start safely on an existing volume, and a store_contract/mongo test pins the index spec",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h15",
+          "text": "The tracker ensures the readings index idempotently at startup on the existing volume, and a test with a spec-recording FakeCollection pins the index spec",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "contradiction with c18?",
+          "resolved": true,
+          "blocking": true,
+          "resolution": "User: resolve by the index-ownership change (c18) \u2014 the tracker ensures the index and the web store never calls create_index; h2's __init__ placement is superseded"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at) so /series, /latest and /forecast read only the requested window instead of scanning the whole collection; query time stops growing with total history",
+          "kind": "requirement",
+          "reason": "lapse l1 (confirmed): /forecast is not bounded by this index"
+        }
+      ]
+    },
+    {
+      "id": "c3",
+      "kind": "assumption",
+      "text": "Wire payloads are already small and range-bounded (/series 6h \u2248 12 KB, 7d \u2248 87 KB, /forecast 48h \u2248 10 KB); the waste is server-side scanning and client re-fetching, not response size",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "The dashboard loads a window as time-aligned chunks requested with the documented from/to params, keeps completed past chunks in an in-memory cache, and on each 60 s poll re-fetches only the live (newest) chunk \u2014 no cursors or pagination added to the API",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "Past chunks are never re-requested within a page session; only the live chunk is re-fetched on each 60 s poll",
+          "status": "rejected",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "Beyond the index: are client-side chunking (c4), chart-only refetch on variable switch (c5), lazy /stats (c6) and /stats without raw bodies (c7) in this spec, or a follow-up once the index lands?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User accepted the recommendation: this spec is the index only; client chunking, variable-switch refetch, lazy /stats and /stats without raw bodies are a follow-up once the index lands"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Switching the chart variable fetches only /series for that variable, and changing the window reuses cached chunks that overlap; health/providers/locations/latest/forecast/stats are not re-requested for a chart-only change",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "A variable-tab click issues exactly 1 request (/series)",
+          "status": "rejected",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "Below-the-fold panels (the Collection health band backed by /stats) load lazily when scrolled into view (IntersectionObserver), not on every poll",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "/stats is not requested until the Collection band intersects the viewport",
+          "status": "rejected",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "/stats computes bytes_stored without materialising raw provider bodies \u2014 a server-side size aggregation or a body_size stored at write time \u2014 instead of loading up to 20,000 FetchRecord bodies",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "The fetches query for /stats projects out body (or reads a stored size), and bytes_stored still matches the old value on the same data",
+          "status": "rejected",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "non_goal",
+      "text": "No client-side pixel downsampling in chart.js \u2014 the server already grids /series by step, so a 7d window is ~168 buckets per series",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "assumption",
+      "text": "Forecast rows dominate storage growth: open-meteo + met-no forecast readings are ~99% of the 172,882 readings after 7 days (~25k new readings/day), so the index matters more each week",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "Efficiency changes must keep the pinned contracts green or update them in lockstep: tests/weather/web/test_dashboard_static.py (exact file list, documented-params-only, the loadShape/refresh source-string and isCurrent guard-count asserts), test_api.py test_series_bounds_the_store_query_with_a_limit, and store_contract.py since/until/limit assertions for both stores",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "The full suite passes with the pinned tests updated in the same PR, and no test is deleted to make it pass",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "decision",
+      "text": "Index first: the MongoDB full-collection scan is the problem, so add the compound readings index (user, answering the chunk-size question: 'The issue you said was mongo - let's add index')",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "audience",
+      "text": "Dashboard viewers (local and, once published, climate.culture.dev visitors) and agents calling /series, /latest and /forecast",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "No change for the CLI: weather verbs keep working unchanged",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "n/a",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "before_state",
+      "text": "Each /series query examines all 172,882 readings (SORT over COLLSCAN): 0.56 s for a 6 h window and 0.60 s for 7 d, growing by about 25,000 readings a day",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "The numbers are from the live stack on 2026-09-24 (s1, s2, s8)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "re-run the explain() and curl timings recorded in s1/s2",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "after_state",
+      "text": "Chart queries use an index scan over (location, provider, kind, observed_at): documents examined track documents returned, not collection size",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "The index covers the query in the ESR order (equality location/provider/kind, then observed_at range and sort)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "db.readings.find(<series query>).explain('executionStats') shows IXSCAN",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "why_it_matters",
+      "text": "Query time stays flat as history grows, and a public site cannot be slowed down by cheap repeated chart requests",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "Index build time on the existing volume is seconds, with no downtime",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "n/a \u2014 motivation",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "boundary",
+      "text": "No HTTP API contract change: no pagination or cursors (docs/weather-api.md \u00a79), the same routes, params and response shapes",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "tests/weather/web/test_dashboard_static.py's documented-params-only check still passes",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "diff docs/weather-api.md: only additive notes, no param or shape changes",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "success_signal",
+      "text": "On the live stack, the 7 d /series explain shows IXSCAN with totalDocsExamined \u2264 2\u00d7 nReturned, and /series 7d answers in < 100 ms (from 0.60 s)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "Measured and recorded in the delivery doc, not asserted",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "docker exec weather-mongodb mongosh explain + curl -w %{time_total} against 127.0.0.1:8095",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "A store opened in read-only mode never calls create_index (asserted with the FakeCollection in tests/weather/test_mongo.py)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "assumption",
+      "text": "The index bounds /series by window, but /forecast reads kind=forecast points with observed_at \u2265 now from every stored forecast issue before picking the newest one, so it stays proportional to the number of overlapping stored issues",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q3",
+          "text": "Should the success signal also require /forecast 48h < 200 ms, or is reading only the newest issue (e.g. by fetch_id / model_run_at) a follow-up?",
+          "resolved": true,
+          "blocking": false,
+          "resolution": "User: /forecast is a follow-up"
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "Follow-up spec after the index lands: client-side time-chunked loading with a cache and live-chunk-only polling (was c4), variable switch fetches only /series (c5), lazy /stats via IntersectionObserver (c6), /stats bytes_stored without loading raw bodies (c7) \u2014 findings s3\u2013s6",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "No retention policy: readings grow ~25k/day (mostly forecast rows superseded by later issues) and the new index grows with them; pruning superseded forecast issues is unexamined",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "Follow-up: make /forecast read only the newest stored issue (e.g. by fetch_id or model_run_at) instead of every overlapping issue's future points \u2014 measured 0.83 s for 48 h; see c19 and s12",
+      "kind": "follow_up",
+      "claim_id": "c19",
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "climate/weather/mongo.py:361-362 + live explain() on weather.readings",
+      "finding": "Only indexes are fetches(provider,location,requested_at) and readings(fetch_id). A 7-day series query explains as SORT over COLLSCAN: 172,882 docs examined to return a window. Measured /series 6h = 0.56s and 7d = 0.60s \u2014 flat, because the cost is the full scan, not the window.",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "curl timings against 127.0.0.1:8095 + api.py /series (from/to/step/max_points push-down, MAX_SERIES_STORE_POINTS=100000)",
+      "finding": "The API already pushes since/until/limit into store.series and grids the result (default 2000, ceiling 10000 points). The dashboard sends from and step per window (app.js:31-35), so responses are bounded; only the Mongo side reads everything.",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "climate/weather/web/static/js/app.js:5-8,28,280-319,499-513 + docs/weather-api.md:1458",
+      "finding": "Every 60 s poll, window change and variable-tab change re-runs the full refresh(): 7 requests (health, providers, locations, latest, series, forecast, stats) re-downloading the whole window. There is no cache ('never a merge with something remembered'). The contract rules out pagination and cursors (\u00a79), but from/to are documented, so chunking by time needs no API change.",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "climate/weather/web/static/js/app.js:199-204 (variable tabs) + 220-278 (loadShape/loadView)",
+      "finding": "A variable-tab click calls the same full refresh() as the poll, so 6 of the 7 requests fetch data that didn't change.",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "climate/weather/web/static/ (grep IntersectionObserver = 0 hits) + app.js loadView",
+      "finding": "All three bands (Now, Trend, Collection) are fetched unconditionally on every refresh; nothing is lazy today.",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "climate/weather/web/api.py:126,1654-1686 + mongo.py _fetch_from_document",
+      "finding": "bytes_stored = sum(len(record.body)) over iter_fetches(limit=20000); the Mongo query has no projection, so each /stats call pulls raw bodies (24 MB in the fetches collection after 7 days). Measured /stats 24h = 0.25s.",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "climate/weather/web/static/js/chart.js:301-332 + app.js WINDOWS steps",
+      "finding": "drawSeries emits every point as SVG, but points arrive pre-gridded (6h/900s = 24, 24h/1800s = 48, 7d/3600s = 168 buckets), so there's no rendering win without longer windows.",
+      "seeds": [
+        "c8"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "live aggregation over weather.readings grouped by provider/kind",
+      "finding": "open-meteo forecast 147,699 + met-no forecast 23,320 out of 172,882; observation/model rows are about 1,700. Without an index, every chart query scans all the forecast rows too.",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "tests/weather/web/test_dashboard_static.py + tests/weather/web/test_api.py:655 + tests/weather/store_contract.py:384-408",
+      "finding": "Several tests pin refresh()'s literal structure and the store limit kwarg; restructuring the refresh for chunks and lazy loading will need those tests rewritten, and a new JS module must be added to EXPECTED_FILES.",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "user decision on the split (2026-09-24)",
+      "finding": "The user split the climate.culture.dev scope into two specs; this frame carries the data-efficiency half. Answering the chunk-size question, the user pointed at the measured Mongo COLLSCAN and chose the index as the fix.",
+      "seeds": [
+        "c11",
+        "c2"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "challenge pass / adjacent-systems lens: climate/weather/mongo.py:352-362 + web/__main__.py:53 + gh issue 8",
+      "finding": "MongoWeatherStore.__init__ calls create_index on both collections, and web/__main__ builds the same store via mongo.build_store(). Issue #8 plans a read-only 'web' user; createIndex needs a write-level privilege, so putting the new index in __init__ (as h2 proposes) would stop the web container starting once #8 lands.",
+      "seeds": [
+        "c18"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "challenge pass / unstated-assumptions lens: climate/weather/web/api.py _select_forecast_issue (store.series kind='forecast', since=now) + /forecast 48h = 0.83 s",
+      "finding": "Every open-meteo (15 min) and met-no (30 min) fetch stores its own future horizon, so 'future points' spans many issues. The spec's success signal only measures /series, so /forecast might not improve and nobody would notice.",
+      "seeds": [
+        "c19"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "challenge pass / concurrency lens: tracker + web both constructing MongoWeatherStore at startup",
+      "finding": "Clean for today's unauthenticated Mongo: identical concurrent createIndex calls are idempotent on the server. The residual concern is only the read-only-user case (G1).",
+      "seeds": []
+    },
+    {
+      "id": "s14",
+      "surface": "challenge pass / reversibility + migration lens: mongo index build on the live 120 MB readings collection",
+      "finding": "Reversible (dropIndex), no data rewrite. Backup/restore round-trips indexes via mongodump metadata, and the startup ensure-index re-creates it anyway. Not probed: build time on this volume (the assumption says 'seconds').",
+      "seeds": []
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / test-seam lens: tests/weather/test_mongo.py:137-144 FakeCollection.create_index",
+      "finding": "The fake accepts any spec and returns a name, so 'a test pins the index spec' requires the fake to record the specs it was given \u2014 a small test-helper change, not a production one.",
+      "seeds": []
+    }
+  ],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Claim c2 (confirmed) states the index makes /series, /latest and /forecast read only the requested window; /forecast was never traced \u2014 its query is kind=forecast, since=now across every stored issue, so the index does not bound it the way c2 says",
+      "skipped_check": "trace _select_forecast_issue's store call and time /forecast before writing c2",
+      "refs": [
+        "challenge pass / unstated-assumptions lens: api.py _select_forecast_issue"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c2",
+      "seam": "weather.readings indexes \u2014 MongoWeatherStore(ensure_indexes=True)",
+      "behavior": "a compound (location, provider, kind, observed_at) index exists and series/latest queries use it",
+      "source_text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c18",
+      "seam": "store construction: tracker vs web entry points",
+      "behavior": "the tracker ensures indexes; the web store never issues createIndex",
+      "source_text": "Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c17",
+      "seam": "/api/v1/series 7d on the live stack",
+      "behavior": "IXSCAN with docs examined <= 2x returned, and < 100 ms",
+      "source_text": "On the live stack, the 7 d /series explain shows IXSCAN with totalDocsExamined \u2264 2\u00d7 nReturned, and /series 7d answers in < 100 ms (from 0.60 s)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c1",
+      "seam": "series() result ordering (both stores) + live /series",
+      "behavior": "same values before and after except observed_at ties, which now resolve deterministically to the most recently fetched reading (h1 as reworded by d1)",
+      "source_text": "The weather dashboard reads only what it shows: chart and stats queries hit an index over the requested window instead of scanning all history, so response time stays flat as the collection grows",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c16",
+      "seam": "HTTP API contract (docs/weather-api.md routes/params/shapes)",
+      "behavior": "no route, param or response-shape change",
+      "source_text": "No HTTP API contract change: no pagination or cursors (docs/weather-api.md \u00a79), the same routes, params and response shapes",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
+}

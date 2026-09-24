@@ -1,0 +1,71 @@
+# Build Plan — climate.culture.dev
+
+slug: `climate-culture-dev` · status: `exported` · from frame: `climate-culture-dev`
+
+> The climate-cli weather dashboard is published at <https://climate.culture.dev> through a Cloudflare tunnel to the loopback-bound weather-web service, following the \*.culture.dev tunnel precedent
+
+## Tasks
+
+### t1 — Operations doc for climate.culture.dev: topology, the hand-turns as run, verification and reversal
+
+- instruction: New file only: docs/operations/climate-culture-dev.md. Re-run the read-only checks to capture current output; never print a secret value (use 'grant show', not 'grant get'). Use a placeholder for the operator email.
+- covers: c2, h2, c3, h3, c4, h4, c5, h5, c19, h8, c26, h12, c27, h13, c28, h14
+- acceptance:
+  - docs/operations/climate-culture-dev.md exists, modelled on culture-nodes/docs/operations/nodes-culture-dev.md: browser → Access → tunnel → 127.0.0.1:8095 diagram, the `cultureflare remote-login setup … --allow <operator email>` command with the email as a placeholder only, the grant secret names, and the cloudflared-climate.service unit verbatim
+  - It records the checks as run on 2026-09-24: remote-login show output (tunnel, ingress, CNAME, Access app, 1 policy), 'systemctl --user is-active' = active, compose ps 127.0.0.1:8095, no Mongo host port, no provider keys in weather-web, zone plan = Free Website
+  - It documents reversal: disable the unit + 'cultureflare remote-login teardown --hostname climate.culture.dev'
+  - markdownlint passes, and grep finds no email address, coordinate or token in the file
+
+### t2 — README + docs/weather-api.md: document the tunnel + SSO exposure path
+
+- instruction: Touch only README.md and docs/weather-api.md. Keep the licence-terms caveat, but reword it to point at the dashboard's licence footer.
+- covers: c9, h19, c34, h20
+- acceptance:
+  - README 'Exposing the web service' replaces the unqualified 'do not put it on the public internet' warning with: loopback stays the default; a public hostname goes through a Cloudflare tunnel behind Access SSO (pointing at docs/operations/climate-culture-dev.md); the ingress is pinned to 127.0.0.1:8095, so changing `CLIMATE_WEB_PORT`/BIND means re-running remote-login setup
+  - README and docs/weather-api.md say remote CLI/doctor access needs an Access service token, not provisioned yet; neither advertises `CLIMATE_WEATHER_URL`=<https://climate.culture.dev>
+  - docs/weather-api.md base-URL section lists <https://climate.culture.dev> (Access-gated) next to the loopback default; the no-CORS/no-auth rationale notes Access as the gate
+  - markdownlint passes; tests/`test_repo_hygiene.py` passes
+
+### t3 — IMS observation adapter gets a non-empty licence, so every provider shows a licence in the footer
+
+- instruction: Touch only climate/weather/providers/ims.py and a provider test. Check the IMS terms page wording before choosing the licence label.
+- covers: c23, h9
+- acceptance:
+  - climate/weather/providers/ims.py attribution.licence is non-empty (e.g. 'IMS Terms of Use', url <https://ims.gov.il/en/termOfuse>, matching `ims_forecast`)
+  - A test iterates the provider registry and asserts every provider's attribution.licence is non-empty (tests/weather/providers/`test_base.py` or a new test)
+  - GET /api/v1/providers on the live stack returns 6/6 non-empty licences after rebuild (recorded in t6)
+
+### t4 — Dashboard shows 'signed out — reload to sign in' when the Access session expires
+
+- instruction: Touch only climate/weather/web/static/js/api.js, js/app.js (or panels.js) and tests/weather/web/`test_dashboard_static.py`. Use scripts/`dev_dashboard_server.py` for the playwright check. No new JS module unless it's added to `EXPECTED_FILES`.
+- covers: c33, h18
+- acceptance:
+  - api.js fetches with redirect: 'manual'; a response with type 'opaqueredirect' (or status 0 after a redirect) raises an ApiError flagged signedOut instead of unreachable
+  - The page renders a distinct signed-out state with a reload link, built with textContent (no innerHTML), and stops polling until reload
+  - tests/weather/web/`test_dashboard_static.py` is updated in lockstep for any pinned source strings; the documented-params-only and local-assets checks still pass
+  - Agent-side check (playwright on the local dev server with a stub 302 to another origin) shows the signed-out state, not the outage state
+
+### t5 — Edge cache rule via cultureflare once agentculture/cultureflare#56 ships
+
+- instruction: Blocked on cultureflare#56. Don't hand-roll API calls; if #56 stalls, surface it rather than working around it.
+- depends on: t1
+- covers: c24, h10
+- acceptance:
+  - 'cultureflare cache-rule set' creates: /api/v1/\* edge TTL 60 s excluding /api/v1/health, static assets 1 h; a second run reports unchanged
+  - Rule ids + TTLs are recorded in docs/operations/climate-culture-dev.md
+  - After SSO login, a repeated /api/v1/latest within 60 s shows cf-cache-status: HIT, and an unauthenticated request still gets the 302 (a cache never bypasses Access)
+
+### t6 — End-to-end verification of the success signal (agent-side + one user SSO login)
+
+- instruction: Main agent + user. Resolve via 1.1.1.1 if the local resolver lags. Every check in c29 must be run, not assumed (h15).
+- depends on: t1, t2, t3, t4, t5
+- covers: c1, h1, c25, h17, c29, h15, c8, h6
+- acceptance:
+  - Unauthenticated curl to /, /api/v1/health, /api/v1/latest → 302 to the Access login (h17)
+  - The user logs in via SSO and confirms the dashboard matches <http://127.0.0.1:8095> over HTTPS, with 6 licences in the footer
+  - Served HTML/JSON contain no coordinate, key or token; provenance.station is still null (`test_api.py`:790 passes)
+  - Results are recorded in `docs/deliveries/<date>-climate-culture-dev.md`
+
+## Risks
+
+- [unknown_nonblocking] cultureflare#56 (cache-rule commands) is external; t5 and so t6 cannot finish until it ships (task t5)

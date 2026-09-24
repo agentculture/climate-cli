@@ -75,7 +75,21 @@ const state = {
   providers: null,
   lastSpec: null,
   inFlight: null,
+  refreshTimer: null,
 };
+
+/** Start the minute-poll unless it is already running. */
+function startPolling() {
+  if (state.refreshTimer !== null) return;
+  state.refreshTimer = window.setInterval(refresh, REFRESH_MS);
+}
+
+/** Stop the minute-poll when a signed-out response arrives; the next successful refresh restarts it. */
+function stopPolling() {
+  if (state.refreshTimer === null) return;
+  window.clearInterval(state.refreshTimer);
+  state.refreshTimer = null;
+}
 
 function isoZ(date) {
   return `${date.toISOString().slice(0, 19)}Z`;
@@ -307,6 +321,9 @@ async function refresh() {
     if (!isCurrent()) return;
 
     draw({ shape, latest, series, forecast, stats, now, from, colorOf, titleOf });
+    // A re-sign-in elsewhere followed by a manual refresh clears the signed-out
+    // banner; resume polling too, or the page looks healthy while going stale.
+    startPolling();
   } catch (error) {
     if (isAbort(error) || !isCurrent()) return;
     handleFailure(error);
@@ -321,6 +338,16 @@ async function refresh() {
 /** What the page says about one failed refresh. One branch, one shape. */
 function failureState(error) {
   const message = error?.message || String(error);
+  if (error instanceof ApiError && error.signedOut) {
+    return {
+      status: "Signed out",
+      kind: "signed-out",
+      title: "Signed out",
+      message: "This dashboard's Access session has expired.",
+      hint: "",
+      reload: true,
+    };
+  }
   if (error instanceof ApiError && error.unreachable) {
     return {
       status: "Not answering",
@@ -356,7 +383,9 @@ function handleFailure(error) {
     title: view.title,
     message: view.message,
     hint: view.hint,
+    reload: Boolean(view.reload),
   });
+  if (view.kind === "signed-out") stopPolling();
 }
 
 /** The banner and the service dot: store down, first hour, or running. */
@@ -510,5 +539,5 @@ window.addEventListener("resize", () => {
 });
 
 renderVariableTabs();
-window.setInterval(refresh, REFRESH_MS);
+startPolling();
 await refresh();
