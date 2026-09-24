@@ -47,9 +47,16 @@ that is a plan deviation — record it with `/deviate`, do not invent it locally
 | Default bind | `127.0.0.1` (loopback; changing it is an explicit opt-in setting) |
 | Default port | `8095` |
 | Default base URL | `http://127.0.0.1:8095` |
+| Public base URL | `https://climate.culture.dev` (Access-gated; see [`docs/operations/climate-culture-dev.md`](operations/climate-culture-dev.md)) |
 | API prefix | `/api/v1` |
 | Dashboard | `/` (static files served from `climate/weather/web/static/`) |
 | CLI override | `CLIMATE_WEATHER_URL` (base URL, no trailing slash, no `/api/v1`) |
+
+`https://climate.culture.dev` sits behind Cloudflare Access SSO: a browser is
+redirected to sign in, and a non-browser client (the CLI, `climate doctor`)
+needs an Access service token to get past that redirect, which is not
+provisioned yet. Do not set `CLIMATE_WEATHER_URL` to the public hostname —
+the CLI has no way to complete the SSO login and only sees the redirect.
 
 Every API route in this document is written relative to the prefix: the full
 path of `GET /health` is `GET /api/v1/health`.
@@ -85,8 +92,11 @@ resolves inside the static directory and returns `404` if absent. Path traversal
 | `Allow` | `GET, HEAD` | only on a `405` |
 
 No CORS headers are sent. The dashboard is same-origin with the API, so it needs
-none, and the service has no authentication — advertising cross-origin access
-would be a gratuitous exposure.
+none, and the service has no authentication of its own — advertising
+cross-origin access would be a gratuitous exposure. On the public hostname,
+Cloudflare Access is the gate in front of this same unauthenticated,
+un-rate-limited origin, not a substitute for one; see
+[`docs/operations/climate-culture-dev.md`](operations/climate-culture-dev.md).
 
 ### 2.4 Methods
 
