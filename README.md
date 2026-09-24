@@ -271,12 +271,21 @@ CLIMATE_WEB_PORT=8095
 ```
 
 > **Warning:** the web service has **no authentication of any kind.** Anyone who
-> can reach the port can read everything you have collected. Put it behind a
-> reverse proxy with auth, or restrict it to a trusted network — do not put it
-> on the public internet. Note also that re-serving third-party weather data
-> beyond personal use may carry licence conditions beyond attribution; the
-> provider terms above were read in summary only. Re-check before exposing the
-> service outside your LAN.
+> can reach the port can read everything you have collected. Loopback stays
+> the default; a public hostname goes through a Cloudflare tunnel behind
+> Cloudflare Access SSO, never the bind address above directly — see
+> [`docs/operations/climate-culture-dev.md`](docs/operations/climate-culture-dev.md)
+> for the setup. The tunnel's ingress is pinned to `127.0.0.1:8095`, so
+> changing `CLIMATE_WEB_PORT` or `CLIMATE_WEB_BIND` means re-running that
+> remote-login setup, or the public hostname starts returning `502`. Remote
+> CLI/`doctor` access to a tunnelled instance needs a Cloudflare Access
+> service token, which is not provisioned yet — don't point
+> `CLIMATE_WEATHER_URL` at a public hostname; the CLI cannot complete the SSO
+> login and will just see the redirect. Note also that re-serving third-party
+> weather data beyond personal use may carry licence conditions beyond
+> attribution — see each provider's licence line in the dashboard footer and
+> the provider terms above, which were read in summary only. Re-check before
+> exposing the service beyond your LAN.
 
 The service is read-only over the collection: it has no write route at all.
 
