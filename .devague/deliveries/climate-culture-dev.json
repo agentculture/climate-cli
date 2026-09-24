@@ -2,7 +2,7 @@
   "plan_slug": "climate-culture-dev",
   "schema_version": 2,
   "created": "2026-09-24T08:31:43Z",
-  "updated": "2026-09-24T08:31:44Z",
+  "updated": "2026-09-24T19:57:58Z",
   "deviations": [],
   "evidence": [
     {
@@ -137,6 +137,25 @@
       "status": "proposed",
       "superseded": false,
       "seq": 7
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o1",
+      "test_ref": "agent-side headless Chromium (Playwright 1.63, page.clock + page.route 302) against 127.0.0.1:8095",
+      "behavior_text": "API 302 -> banner 'Signed out / This dashboard's Access session has expired. / Reload to sign in' (page-state--signed-out, warning tone, styled reload button, light+dark); 0 polls over 2 further minutes; after routes restored + a variable-tab click the refresh returns 200s, the banner hides, and polling resumes (1 poll at +61 s, 2 at +121 s); no console errors",
+      "contract_text": "an expired Access session shows 'Signed out \u2014 Reload to sign in' and stops polling, not the outage state",
+      "evidence_type": "integration",
+      "strength": "execution",
+      "strength_basis": "scripted browser run with a controlled clock against the rebuilt live stack; screenshots in the session scratchpad",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-24T19:57:58Z",
+        "commit": "5a0d42c"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
     }
   ],
   "deltas": [],
