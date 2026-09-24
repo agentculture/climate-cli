@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T06:00:01Z",
-  "updated": "2026-09-24T06:38:35Z",
+  "updated": "2026-09-24T07:43:56Z",
   "claims": [
     {
       "id": "c1",
@@ -960,6 +960,18 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "Task t3 set the IMS observation licence to 'IMS Terms of Use' (url /en/termOfuse) by copying ims_forecast's label; the IMS terms page is JS-rendered and WebFetch returned only template scaffolding, so the wording was not verified against the page",
+      "skipped_check": "read the rendered IMS terms-of-use text (needs a JS-capable browser)",
+      "refs": [
+        "plan climate-culture-dev t3: climate/weather/providers/ims.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }

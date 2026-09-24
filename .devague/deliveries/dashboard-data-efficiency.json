@@ -1,0 +1,26 @@
+{
+  "plan_slug": "dashboard-data-efficiency",
+  "schema_version": 2,
+  "created": "2026-09-24T08:13:58Z",
+  "updated": "2026-09-24T08:13:58Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Add a deterministic tie-break to series(): order by (observed_at, requested_at) in both the Mongo and in-memory stores, with a store-contract test, so agg=last always picks the most recently fetched reading (the rule /latest already uses); reword h1 to 'same values before and after, except where several readings share an observed_at \u2014 previously unspecified, now deterministically the most recently fetched'",
+      "task_ref": "t3",
+      "reason": "t3's live before/after check found 2 of 840 /series 7d values and 9 fetch_ids changed: readings sharing an observed_at were tie-broken arbitrarily (the full-scan SORT picked the earlier fetch, the index picks the later one), so h1 'same results' could not hold as written",
+      "affects": [
+        "h1",
+        "c1",
+        "c2"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
