@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T06:10:54Z",
-  "updated": "2026-09-24T06:38:23Z",
+  "updated": "2026-09-24T08:31:12Z",
   "claims": [
     {
       "id": "c1",
@@ -528,5 +528,51 @@
       "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c2",
+      "seam": "weather.readings indexes \u2014 MongoWeatherStore(ensure_indexes=True)",
+      "behavior": "a compound (location, provider, kind, observed_at) index exists and series/latest queries use it",
+      "source_text": "The readings collection gets a compound index matching the range query (location, provider, kind, observed_at), so /series and /latest read only the requested window instead of scanning the whole collection; query time stops growing with total history (/forecast is a follow-up)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c18",
+      "seam": "store construction: tracker vs web entry points",
+      "behavior": "the tracker ensures indexes; the web store never issues createIndex",
+      "source_text": "Index creation is owned by the writer: the tracker ensures the readings index at startup, and the web service's store never issues createIndex, so it keeps working once issue #8 gives it a read-only Mongo user",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c17",
+      "seam": "/api/v1/series 7d on the live stack",
+      "behavior": "IXSCAN with docs examined <= 2x returned, and < 100 ms",
+      "source_text": "On the live stack, the 7 d /series explain shows IXSCAN with totalDocsExamined \u2264 2\u00d7 nReturned, and /series 7d answers in < 100 ms (from 0.60 s)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c1",
+      "seam": "series() result ordering (both stores) + live /series",
+      "behavior": "same values before and after except observed_at ties, which now resolve deterministically to the most recently fetched reading (h1 as reworded by d1)",
+      "source_text": "The weather dashboard reads only what it shows: chart and stats queries hit an index over the requested window instead of scanning all history, so response time stays flat as the collection grows",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c16",
+      "seam": "HTTP API contract (docs/weather-api.md routes/params/shapes)",
+      "behavior": "no route, param or response-shape change",
+      "source_text": "No HTTP API contract change: no pagination or cursors (docs/weather-api.md \u00a79), the same routes, params and response shapes",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }

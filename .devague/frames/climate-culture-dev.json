@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-24T06:00:01Z",
-  "updated": "2026-09-24T07:43:56Z",
+  "updated": "2026-09-24T08:31:44Z",
   "claims": [
     {
       "id": "c1",
@@ -973,5 +973,69 @@
       "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c33",
+      "seam": "dashboard fetch + page-state (static/js/api.js, app.js, panels.js)",
+      "behavior": "an expired Access session shows 'Signed out \u2014 Reload to sign in' and stops polling, not the outage state",
+      "source_text": "When the Access session expires mid-poll, the dashboard says 'signed out \u2014 reload to sign in' instead of 'The weather service is not answering'",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c23",
+      "seam": "provider attribution \u2192 /api/v1/providers \u2192 dashboard footer",
+      "behavior": "every provider carries a non-empty licence",
+      "source_text": "The dashboard footer (#credits) lists every enabled provider with a non-empty licence; the IMS observation provider's licence, blank today, is filled in from IMS's terms of use",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c25",
+      "seam": "https://climate.culture.dev (Cloudflare Access)",
+      "behavior": "an unauthenticated request to any path gets the Access login redirect, never weather data",
+      "source_text": "Signed-in viewers on the Access allow list (the operator for now); agents reading over HTTP need an Access service token, since CLIMATE_WEATHER_URL alone gets the SSO redirect",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c4",
+      "seam": "host port publishing + container env (docker compose)",
+      "behavior": "weather-web stays loopback-only, Mongo has no host port, and weather-web has no provider keys",
+      "source_text": "weather-web stays published on host loopback only (CLIMATE_WEB_BIND default 127.0.0.1); the tunnel reaches it locally, so docker-compose.yml and docker/weather.env need no change and the port is never opened to the LAN",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c9",
+      "seam": "README.md 'Exposing the web service' + docs/weather-api.md \u00a72",
+      "behavior": "docs describe the Access-gated tunnel path and the port pinning, and don't advertise CLIMATE_WEATHER_URL for the public host",
+      "source_text": "The public deployment is documented: README 'Exposing the web service' and docs/weather-api.md describe the tunnel + Access SSO path and the public base URL, and state that remote CLI/doctor access needs an Access service token, which is not provisioned yet \u2014 agents and the CLI read locally for now",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c24",
+      "seam": "Cloudflare cache rule for climate.culture.dev",
+      "behavior": "/api/v1/* edge TTL 60 s (not /health), static 1 h; repeat request shows cf-cache-status: HIT",
+      "source_text": "The edge cache rule is created with 'cultureflare cache-rule set' once agentculture/cultureflare#56 ships (the origin keeps sending Cache-Control: no-store, so the rule overrides the edge TTL); until then the tunnel + Access go live without the cache",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c29",
+      "seam": "end-to-end success signal (t6)",
+      "behavior": "after SSO login the dashboard matches the loopback one with 6 licences; repeat /latest HITs the cache",
+      "source_text": "Unauthenticated curl https://climate.culture.dev/api/v1/health gets the Access login redirect (302), not data; after SSO login the dashboard loads; a repeated /api/v1/latest within 60 s returns cf-cache-status: HIT; 6 of 6 providers show a non-empty licence in the footer; 0 coordinates or secrets in any response",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
