@@ -22,13 +22,17 @@ export const ROUTES = Object.freeze({
 
 /** Thrown for anything that stops a route returning a usable body. */
 export class ApiError extends Error {
-  constructor(message, { route, status = null, code = null, unreachable = false } = {}) {
+  constructor(
+    message,
+    { route, status = null, code = null, unreachable = false, signedOut = false } = {},
+  ) {
     super(message);
     this.name = "ApiError";
     this.route = route;
     this.status = status;
     this.code = code;
     this.unreachable = unreachable;
+    this.signedOut = signedOut;
   }
 }
 
@@ -61,6 +65,7 @@ export async function get(route, params, { signal } = {}) {
     response = await fetch(withQuery(path, params), {
       headers: { Accept: "application/json" },
       cache: "no-store",
+      redirect: "manual",
       signal,
     });
   } catch (cause) {
@@ -68,6 +73,17 @@ export async function get(route, params, { signal } = {}) {
     throw new ApiError("The weather service is not answering.", {
       route,
       unreachable: true,
+    });
+  }
+
+  // Cloudflare Access answers an expired session with a 302 to its own
+  // login origin. `redirect: "manual"` stops fetch from following it, so
+  // that never surfaces as the network TypeError `unreachable` reports —
+  // it comes back as an opaque, unreadable response instead.
+  if (response.type === "opaqueredirect" || response.status === 0) {
+    throw new ApiError("This page is signed out.", {
+      route,
+      signedOut: true,
     });
   }
 

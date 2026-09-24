@@ -210,6 +210,53 @@ def test_an_aborted_request_never_becomes_an_error_state() -> None:
     assert 'return error?.name === "AbortError";' in _app_js()
 
 
+# --- an expired Access session is signed-out, not unreachable ----------------
+
+
+def test_the_fetch_never_follows_a_cross_origin_redirect() -> None:
+    """Access answers an expired session with a 302; fetch must not chase it."""
+    api_js = _read(STATIC_ROOT / "js" / "api.js")
+    assert 'redirect: "manual",' in api_js
+
+
+def test_an_opaque_redirect_is_flagged_signed_out_not_unreachable() -> None:
+    api_js = _read(STATIC_ROOT / "js" / "api.js")
+    assert 'response.type === "opaqueredirect" || response.status === 0' in api_js
+    guard = api_js.split('response.type === "opaqueredirect" || response.status === 0', 1)[1].split(
+        "\n  }", 1
+    )[0]
+    assert "signedOut: true," in guard
+
+
+def test_api_error_carries_a_signed_out_flag() -> None:
+    api_js = _read(STATIC_ROOT / "js" / "api.js")
+    assert "signedOut = false" in api_js
+    assert "this.signedOut = signedOut;" in api_js
+
+
+def test_a_signed_out_response_stops_polling_and_renders_its_own_state() -> None:
+    """Regression: an expired Access session read as an outage (c33/h18)."""
+    app_js = _app_js()
+    assert "error instanceof ApiError && error.signedOut" in app_js
+    assert 'kind: "signed-out",' in app_js
+    assert "function stopPolling()" in app_js
+    assert 'if (view.kind === "signed-out") stopPolling();' in app_js
+    assert "state.refreshTimer = window.setInterval(refresh, REFRESH_MS);" in app_js
+
+
+def test_signed_out_state_renders_a_reload_link_built_with_text_content() -> None:
+    panels_js = _read(STATIC_ROOT / "js" / "panels.js")
+    assert "if (state.reload) {" in panels_js
+    reload_body = panels_js.split("if (state.reload) {", 1)[1].split("\n  }", 1)[0]
+    assert 'document.createElement("a")' in reload_body
+    assert "link.textContent = " in reload_body
+
+
+def test_no_static_javascript_ever_uses_innerHTML() -> None:  # noqa: N802
+    for path in STATIC_ROOT.rglob("*.js"):
+        assert "innerHTML" not in _read(path), f"{path.name} sets innerHTML"
+
+
 # --- the seam at now ----------------------------------------------------------
 
 
